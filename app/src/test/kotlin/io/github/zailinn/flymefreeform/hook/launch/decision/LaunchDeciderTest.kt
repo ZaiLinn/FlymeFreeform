@@ -1,0 +1,218 @@
+package io.github.zailinn.flymefreeform.hook.launch.decision
+
+import org.junit.Assert.*
+import org.junit.Test
+
+/** 序列及 flags 来自计划 B4 的 2026-11-08 设备日志；时间用同一单调时基。 */
+class LaunchDeciderTest {
+    private val telegram = "org.telegram.messenger.web"
+    private val x = "com.twitter.android"
+    private val chrome = "com.android.chrome"
+    private val launcher = "com.android.launcher"
+    private val systemUi = "com.android.systemui"
+
+    private class Environment : LaunchEnvironment {
+        override var enabled = true
+        override var zoomLaunch = true
+        override val systemUiUid = 10010
+        override val launcherUid = 10020
+        var unlocked = true
+        var shown: String? = null
+        var owner: String? = null
+        var implicit: String? = null
+        var resolveCalls = 0
+        val excluded = mutableSetOf<String>()
+        val thirdParty = mutableSetOf("org.telegram.messenger.web", "com.twitter.android", "com.android.chrome")
+        val controlCenter = mutableSetOf<String>()
+        override fun deviceUnlocked(refresh: Boolean) = unlocked
+        override fun isExcluded(pkg: String) = pkg in excluded
+        override fun isThirdParty(pkg: String) = pkg in thirdParty
+        override fun dispatchOwner(callingPackage: String?, realCallingUid: Int, requestRealUid: Int) = owner
+        override fun zoomShownPackage() = shown
+        override fun fromControlCenter(pkg: String) = pkg in controlCenter
+        override fun resolveImplicitTarget(): String? { resolveCalls++; return implicit }
+    }
+    private fun link(target: String = x) = LaunchSnapshot(
+        action = LaunchRules.ACTION_VIEW, dataString = "https://example.test/post/42", flags = 0x10000400,
+        componentPackage = target, callingPackage = telegram, callingUid = 10200,
+        hasResultTo = true, requestCode = -1,
+    )
+    private fun pre(s: LaunchSnapshot, e: Environment, m: LaunchMemory, time: Long) = LaunchDecider.decidePreempt(s, e, m, time)
+    private fun inject(s: LaunchSnapshot, e: Environment, m: LaunchMemory, time: Long) = LaunchDecider.decideInject(s, e, m, time)
+    private fun applyEvents(d: LaunchDecision, m: LaunchMemory) {
+        d.events.filterIsInstance<LaunchEvent.ReturnUpdate>().forEach { m.apply(it.check) }
+    }
+    /** 模拟执行层成功之后的更新；失败路径不更新启动/重复记忆。 */
+    private fun successful(d: LaunchDecision, m: LaunchMemory, time: Long) {
+        applyEvents(d, m)
+        when (d) {
+            is LaunchDecision.Preempt -> {
+                m.markZoomed(d.target, d.selfRelaunch, time)
+                if (d.linkKey != null) { m.markLink(d.linkKey, time); m.record(d.callingPackage, d.target, time) }
+            }
+            is LaunchDecision.ReopenInZoom -> { m.markLink(d.linkKey, time); m.record(d.callingPackage, d.target, time) }
+            is LaunchDecision.Inject -> {
+                if (d.markSelfRelaunch) m.markZoomed(d.selfTarget!!, true, time)
+                d.recordInterApp?.let { (caller, target) -> m.record(caller, target, time) }
+            }
+            else -> Unit
+        }
+    }
+    private fun logs(d: LaunchDecision) = d.events.filterIsInstance<LaunchEvent.Log>().map { it.code }
+    private fun reason(d: LaunchDecision) = (d as? LaunchDecision.Inject)?.reason
+    private fun self(target: String, data: String? = null, flags: Int = 0x1801c000) = link(target).copy(
+        callingPackage = target, action = LaunchRules.ACTION_MAIN, dataString = data, flags = flags,
+    )
+
+    @Test fun telegramXFirstLinkDuplicateAndMainRelaunch() {
+        val e = Environment(); val m = LaunchMemory(); val first = pre(link(), e, m, 1000)
+        assertTrue(first is LaunchDecision.Preempt)
+        assertTrue(logs(first).contains("ZOOM_DECISION_execute_oktrue_rt1_self0_link1_pi0_su0_cp${telegram}_tg$x"))
+        successful(first, m, 1000)
+        assertTrue(pre(link().copy(flags = 0x10000000), e, m, 1060) is LaunchDecision.SwallowDuplicate)
+        val restart = self(x)
+        assertTrue(pre(restart, e, m, 1250) is LaunchDecision.PassThrough)
+        val d = inject(restart, e, m, 1250) as LaunchDecision.Inject
+        assertEquals("self_relaunch", d.reason); assertTrue(d.markSelfRelaunch)
+    }
+    @Test fun alreadyZoomedXReopensAndSwallowsDuplicate() {
+        val e = Environment().apply { shown = x }; val m = LaunchMemory()
+        val first = pre(link(), e, m, 1000)
+        assertTrue(first is LaunchDecision.ReopenInZoom)
+        assertEquals("ZOOM_LINK_TARGET_IN_ZOOM_execute_$x", logs(first).first())
+        successful(first, m, 1000)
+        assertTrue(pre(link().copy(flags = 0x10000000), e, m, 1060) is LaunchDecision.SwallowDuplicate)
+    }
+    @Test fun chromeDispatcherRelaunchRetainsZoom() {
+        val e = Environment(); val m = LaunchMemory()
+        successful(pre(link(chrome), e, m, 1000), m, 1000)
+        val d = pre(self(chrome, "https://example.test/post/42", 0x1a080000), e, m, 1250) as LaunchDecision.Preempt
+        assertTrue(d.selfRelaunch)
+    }
+    @Test fun relayHopLimitIsTwo() {
+        val e = Environment(); val m = LaunchMemory()
+        successful(pre(link(chrome), e, m, 1000), m, 1000)
+        val relay = self(chrome, "https://example.test/post/42", 0x1a080000)
+        for (time in listOf(1250L, 1500L)) {
+            val d = pre(relay, e, m, time) as LaunchDecision.Preempt
+            assertTrue(d.selfRelaunch); successful(d, m, time)
+        }
+        assertTrue(pre(relay, e, m, 1750) is LaunchDecision.PassThrough)
+    }
+    @Test fun relayExpiresAfterThreeSeconds() {
+        val e = Environment(); val m = LaunchMemory()
+        successful(pre(link(), e, m, 1000), m, 1000)
+        assertEquals("self_relaunch", reason(inject(self(x), e, m, 3999)))
+        assertNull(reason(inject(self(x), e, m, 4000)))
+        assertNull(reason(inject(self(x), e, m, 4001)))
+    }
+    @Test fun activityForResultDoesNotPreemptOriginalChain() {
+        val e = Environment(); val m = LaunchMemory()
+        assertTrue(pre(link().copy(requestCode = 100), e, m, 1000) is LaunchDecision.PassThrough)
+        // 旧注入分支只补 options，仍保留 resultTo；不把“禁止重发”改成新的全局注入规则。
+        assertEquals("inter_app", reason(inject(link().copy(requestCode = 100), e, m, 1000)))
+    }
+    @Test fun inAppNavigationWithoutNewTaskPassesThrough() {
+        val e = Environment(); val m = LaunchMemory()
+        successful(pre(link(), e, m, 1000), m, 1000)
+        val page = self(x).copy(flags = 0, action = LaunchRules.ACTION_VIEW)
+        assertTrue(pre(page, e, m, 1250) is LaunchDecision.PassThrough)
+        assertTrue(inject(page, e, m, 1250) is LaunchDecision.PassThrough)
+    }
+    @Test fun launcherGlobalSearchNeverInjects() {
+        val e = Environment(); val m = LaunchMemory()
+        val d = inject(link().copy(callingPackage = launcher, action = LaunchRules.ACTION_GLOBAL_SEARCH), e, m, 1000)
+        assertTrue(d is LaunchDecision.PassThrough); assertEquals(listOf("ZOOM_SKIP_GLOBAL_SEARCH"), logs(d))
+    }
+    @Test fun lockedDeviceDoesNotPreemptOrReopenOrSwallow() {
+        val e = Environment().apply { unlocked = false }; val m = LaunchMemory()
+        m.markLink("$telegram|$x|https://example.test/post/42", 900)
+        assertTrue(pre(link(), e, m, 1000) is LaunchDecision.PassThrough)
+        e.shown = x
+        assertTrue(pre(link(), e, m, 1000) is LaunchDecision.PassThrough)
+    }
+    @Test fun zoomLaunchOffDisablesLinkAndRelayDecisions() {
+        val e = Environment().apply { zoomLaunch = false }; val m = LaunchMemory()
+        m.markZoomed(x, false, 900)
+        for (s in listOf(link(), self(x))) {
+            assertTrue(pre(s, e, m, 1000) is LaunchDecision.PassThrough)
+            assertTrue(inject(s, e, m, 1000) is LaunchDecision.PassThrough)
+        }
+    }
+    @Test fun returningToCallerIsRememberedAcrossBothStages() {
+        val e = Environment(); val m = LaunchMemory()
+        successful(pre(link(), e, m, 1000), m, 1000)
+        val back = link(telegram).copy(callingPackage = x)
+        val d = pre(back, e, m, 1500)
+        assertTrue(d is LaunchDecision.PassThrough)
+        assertTrue(m.checkReturning(x, telegram, 1500).clearPending)
+        applyEvents(d, m)
+        val injected = inject(back.copy(stage = "executeRequest"), e, m, 1500)
+        assertTrue(injected is LaunchDecision.PassThrough)
+        assertEquals(listOf("ZOOM_INTER_APP_RETURN"), logs(injected))
+    }
+    @Test fun excludedTargetIsNotInterceptedOrInjected() {
+        val e = Environment().apply { excluded += x }; val m = LaunchMemory()
+        assertTrue(pre(link(), e, m, 1000) is LaunchDecision.PassThrough)
+        val d = inject(link(), e, m, 1000)
+        assertTrue(d is LaunchDecision.PassThrough); assertEquals(listOf("ZOOM_SKIPPED_EXCLUDED_$x"), logs(d))
+    }
+    @Test fun pickerActionsStayBeforeInterAppInjection() {
+        val e = Environment(); val m = LaunchMemory()
+        LaunchRules.PICKER_ACTIONS.forEach { action ->
+            val d = inject(link().copy(action = action), e, m, 1000)
+            assertTrue(d is LaunchDecision.PassThrough); assertEquals(listOf("ZOOM_SKIPPED_PICKER"), logs(d))
+        }
+    }
+    @Test fun launcherAndSystemUiAreNotPlainInterAppLinks() {
+        val e = Environment(); val m = LaunchMemory()
+        for (caller in listOf(launcher, systemUi)) {
+            assertTrue(pre(link().copy(callingPackage = caller), e, m, 1000) is LaunchDecision.PassThrough)
+        }
+    }
+    @Test fun injectionReasonsPreserveOldPriority() {
+        val e = Environment(); val m = LaunchMemory()
+        val base = link().copy(hasResultTo = false, callingPackage = "system.source")
+        val cases = listOf(
+            base.copy(zoomSourceExtra = 1) to "notification",
+            base.copy(quickSettingsExtra = true) to "control_center",
+            base.copy(callingPackage = systemUi, hasPendingIntent = true) to "notification",
+            base.copy(callingPackage = launcher, hasResultTo = true) to "launcher_card",
+            base.copy(callingPackage = launcher, componentPackage = "com.android.settings") to "launcher_settings",
+            base.copy(callingPackage = x, componentPackage = x, action = LaunchRules.ACTION_MAIN,
+                realCallingUid = e.launcherUid, flags = 0x14000000) to "launcher_shortcut",
+            base.copy(callingPackage = "android", componentPackage = "org.lsposed.manager", action = LaunchRules.ACTION_MAIN) to "system_launch",
+            base.copy(callingPackage = systemUi, callingUid = e.systemUiUid, action = "android.service.quicksettings.action.QS_TILE") to "control_center",
+            base.copy(callingPackage = launcher, action = LaunchRules.ACTION_MAIN) to "control_center_launcher",
+        )
+        e.controlCenter += x
+        cases.forEach { (s, expected) -> assertEquals("$s", expected, reason(inject(s, e, m, 1000))) }
+    }
+    @Test fun systemDispatcherCanPreempt() {
+        val e = Environment().apply { owner = telegram }; val m = LaunchMemory()
+        val d = pre(link().copy(callingPackage = "android.ext.services", hasResultTo = false), e, m, 1000)
+        assertTrue(d is LaunchDecision.Preempt)
+    }
+    @Test fun appliedMarkerPreventsSecondInjection() {
+        val e = Environment(); val m = LaunchMemory()
+        assertTrue(inject(link().copy(zoomAppliedExtra = true), e, m, 1000) is LaunchDecision.PassThrough)
+    }
+    @Test fun failedPreemptDoesNotCreateDuplicateOrRelayMemory() {
+        val e = Environment(); val m = LaunchMemory()
+        val first = pre(link(), e, m, 1000)
+        applyEvents(first, m)
+        assertTrue(pre(link(), e, m, 1060) is LaunchDecision.Preempt)
+        assertTrue(inject(self(x), e, m, 1250) is LaunchDecision.PassThrough)
+    }
+    @Test fun implicitResolutionIsLazyAndExplicitTargetWins() {
+        val e = Environment().apply { implicit = chrome }; val m = LaunchMemory()
+        inject(link(), e, m, 1000)
+        assertEquals(0, e.resolveCalls)
+        assertEquals("inter_app", reason(inject(link().copy(componentPackage = null), e, m, 1000)))
+        assertEquals(1, e.resolveCalls)
+    }
+    @Test fun sourceMarkersKeepTheirPriorityOverPickerAndBlacklist() {
+        val e = Environment().apply { excluded += x }; val m = LaunchMemory()
+        assertEquals("notification", reason(inject(link().copy(zoomSourceExtra = 1, action = LaunchRules.PICKER_ACTIONS.first()), e, m, 1000)))
+    }
+}
