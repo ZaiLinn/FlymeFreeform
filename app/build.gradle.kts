@@ -84,3 +84,17 @@ dependencies {
     implementation(libs.miuix.ui)
     testImplementation(libs.junit)
 }
+
+// 编译与检查的共同前置条件；不依赖某个本地发布脚本才能执行。
+val checkStarterSafety by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Checks lock-sensitive calls in ActivityStarter hooks"
+    commandLine("sh", rootProject.file("scripts/check-starter-safety.sh").absolutePath)
+    environment("STARTER_SAFETY_ROOT", layout.projectDirectory.dir(
+        "src/main/kotlin/io/github/zailinn/flymefreeform/hook/launch").asFile.absolutePath)
+}
+tasks.configureEach {
+    if (name == "preBuild" || name == "check" || (name.startsWith("compile") && name.endsWith("Kotlin"))) {
+        dependsOn(checkStarterSafety)
+    }
+}

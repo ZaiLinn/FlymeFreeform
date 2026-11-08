@@ -103,7 +103,7 @@ internal class ColorOsFreeformCoordinator(
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
-                    !io.github.zailinn.flymefreeform.config.TrustedSender.matches(sentFromUid, moduleUid())
+                    !io.github.zailinn.flymefreeform.config.SettingsBroadcastSender.accepts(this@ColorOsFreeformCoordinator.context, sentFromUid)
                 ) return
                 configuration.applySettingsBroadcast(intent)
             }
@@ -207,15 +207,6 @@ internal class ColorOsFreeformCoordinator(
         } catch (exception: RuntimeException) {
             logger(Log.WARN, "PINNED_TARGETS_OBSERVER_UNAVAILABLE", exception)
         }
-    }
-
-    private fun moduleUid(): Int = try {
-        context.packageManager.getApplicationInfo(
-            SidebarEntryProtocol.MODULE_PACKAGE,
-            android.content.pm.PackageManager.ApplicationInfoFlags.of(0),
-        ).uid
-    } catch (_: RuntimeException) {
-        -1
     }
 
     private fun applySettings(settings: ModuleSettingsSnapshot) {

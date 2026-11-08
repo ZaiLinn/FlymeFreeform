@@ -39,6 +39,7 @@ internal class ColorOsSidebarEntryConnection(
 ) {
     private val worker = ThreadPoolExecutor(1, 1, 10, TimeUnit.SECONDS, ArrayBlockingQueue(8),
         { task -> Thread(task, "FlymeFreeform-EntryTransport") }, ThreadPoolExecutor.AbortPolicy()).apply { allowCoreThreadTimeOut(true) }
+    private val tasks = CancellableWork(worker)
     private val reply = Messenger(Handler(handler.looper, ::receive))
     private var current: Request? = null
     private var lastFailure = -5_000L
@@ -62,12 +63,17 @@ internal class ColorOsSidebarEntryConnection(
     )
 
     init {
-        context.registerReceiver(object : android.content.BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action == SidebarProtocol.ACTION_USER_SWITCHED) dropLink(unbind = true)
-            }
-        }, android.content.IntentFilter(SidebarProtocol.ACTION_USER_SWITCHED), null, handler,
-            Context.RECEIVER_NOT_EXPORTED)
+        // systemReady 的调用方可能仍持有框架锁，登记广播也离开构造线程。
+        handler.post {
+            try {
+                context.registerReceiver(object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: Context?, intent: Intent?) {
+                        if (intent?.action == SidebarProtocol.ACTION_USER_SWITCHED) dropLink(unbind = true)
+                    }
+                }, android.content.IntentFilter(SidebarProtocol.ACTION_USER_SWITCHED), null, handler,
+                    Context.RECEIVER_NOT_EXPORTED)
+            } catch (exception: RuntimeException) { report(exception) }
+        }
     }
 
     private fun connection(userContext: Context, userId: Int, uid: Int): ServiceConnection =
@@ -142,8 +148,7 @@ internal class ColorOsSidebarEntryConnection(
     private fun prepareAndBind(request: Request) {
         if (preparing != null) return
         preparing = request
-        work(request, alwaysRun = true, onRejected = { releasePreparation(request) }) {
-          try {
+        work(request) {
             if (!request.active.get()) return@work
             val userId = ActivityManager::class.java.getMethod("getCurrentUser").invoke(null) as Int
             val user = UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId) as UserHandle
@@ -209,9 +214,6 @@ internal class ColorOsSidebarEntryConnection(
                     }
                 }
             }
-          } finally {
-            handler.post { releasePreparation(request) }
-          }
         }
     }
 
@@ -310,22 +312,13 @@ internal class ColorOsSidebarEntryConnection(
         current?.takeIf { it !== request && link == null }?.let(::prepareAndBind)
     }
 
-    private fun work(request: Request, alwaysRun: Boolean = false,
-        onRejected: () -> Unit = {}, action: () -> Unit) {
-        try {
-            worker.execute {
-                if (!alwaysRun && !request.active.get()) return@execute
-                try { action() }
-                catch (exception: Exception) {
-                    if (exception is InvocationTargetException && exception.cause is Error) throw exception.cause as Error
-                    handler.post { report(exception); finish(request) }
-                }
-            }
-        } catch (exception: RuntimeException) {
-            report(exception)
-            finish(request)
-            onRejected()
-        }
+    private fun work(request: Request, action: () -> Unit) {
+        tasks.submit(request.active::get, action,
+            failure = { exception ->
+                if (exception is InvocationTargetException && exception.cause is Error) throw exception.cause as Error
+                handler.post { report(exception); finish(request) }
+            },
+            complete = { handler.post { releasePreparation(request) } })
     }
 
     private fun report(exception: Exception) {

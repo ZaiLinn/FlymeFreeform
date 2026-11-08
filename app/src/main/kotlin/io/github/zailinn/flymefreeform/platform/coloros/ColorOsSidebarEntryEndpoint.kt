@@ -46,7 +46,7 @@ internal class ColorOsSidebarEntryEndpoint(
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
-                !io.github.zailinn.flymefreeform.config.TrustedSender.matches(sentFromUid, moduleUid())
+                !io.github.zailinn.flymefreeform.config.SettingsBroadcastSender.accepts(service, sentFromUid)
             ) return
             configuration.applySettingsBroadcast(intent)
         }
@@ -218,15 +218,6 @@ internal class ColorOsSidebarEntryEndpoint(
             lastFailure = now
             log(Log.WARN, "SIDEBAR_ENTRIES_FAILED", exception)
         }
-    }
-
-    private fun moduleUid(): Int = try {
-        service.packageManager.getApplicationInfo(
-            SidebarEntryProtocol.MODULE_PACKAGE,
-            android.content.pm.PackageManager.ApplicationInfoFlags.of(0),
-        ).uid
-    } catch (_: RuntimeException) {
-        -1
     }
 
     private inner class Request(val id: String, val deadline: Long, val reply: Messenger, val target: PinnedTarget.Sidebar?) {

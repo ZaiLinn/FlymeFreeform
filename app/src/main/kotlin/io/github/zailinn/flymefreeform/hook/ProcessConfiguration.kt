@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
 import android.util.Log
 import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.config.ModuleSettingsSnapshot
@@ -62,7 +61,7 @@ internal class ProcessConfiguration(
         val receiver =
             object : BroadcastReceiver() {
                 override fun onReceive(context: Context?, intent: Intent?) {
-                    if (intent == null || !io.github.zailinn.flymefreeform.config.TrustedSender.matches(sentFromUid, moduleUid(appContext))) return
+                    if (intent == null || !io.github.zailinn.flymefreeform.config.SettingsBroadcastSender.accepts(appContext, sentFromUid)) return
                     applySettingsBroadcast(intent)
                 }
             }
@@ -107,18 +106,6 @@ internal class ProcessConfiguration(
         )
         return true
     }
-
-    private fun moduleUid(context: Context): Int =
-        try {
-            context.packageManager.getApplicationInfo(
-                SidebarEntryProtocol.MODULE_PACKAGE,
-                PackageManager.ApplicationInfoFlags.of(0),
-            ).uid
-        } catch (_: RuntimeException) {
-            -1
-        } catch (_: PackageManager.NameNotFoundException) {
-            -1
-        }
 
     /** 接收经调用方 UID 校验的运行时推送，避免等待目标进程重新加载。 */
     fun override(next: ModuleSettingsSnapshot) {

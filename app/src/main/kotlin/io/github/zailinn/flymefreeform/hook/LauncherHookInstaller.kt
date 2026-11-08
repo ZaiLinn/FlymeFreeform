@@ -57,6 +57,19 @@ internal class LauncherHookInstaller(
 
     fun install(classLoader: ClassLoader, applicationInfo: ApplicationInfo) {
         if (!installationStarted.compareAndSet(false, true)) return
+        // 在输入到达前登记许可和配置，避免首次触摸承担 IPC 或等待握手。
+        runCatching {
+            val name = applicationInfo.className?.let {
+                if (it.startsWith(".")) applicationInfo.packageName + it else it
+            } ?: "android.app.Application"
+            val onCreate = classLoader.loadClass(name).getMethod("onCreate")
+            module.hook(onCreate).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .setId("flymefreeform.launcher.permission_owner").intercept { chain ->
+                    val result = chain.proceed()
+                    (chain.thisObject as? Context)?.let(::startEnvironment)
+                    result
+                }
+        }.onFailure { module.log(Log.WARN, TAG, "LAUNCHER_PERMISSION_OWNER_UNAVAILABLE", it) }
         val apk = File(applicationInfo.sourceDir)
         val cache = File(applicationInfo.dataDir, "code_cache/flymefreeform/launcher-symbols")
         val finished = AtomicBoolean(false)

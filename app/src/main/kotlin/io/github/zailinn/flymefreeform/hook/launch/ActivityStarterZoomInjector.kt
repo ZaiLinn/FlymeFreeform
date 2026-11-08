@@ -25,11 +25,12 @@ internal class ActivityStarterZoomInjector(
     private var installedHooks = 0
     private val preempting = ThreadLocal<Boolean>()
     private val controlCenter = ThreadLocal<Pair<Any, MutableMap<String, Boolean>>>()
-    private val pendingReopens = java.util.concurrent.ConcurrentHashMap<String, String>()
-    private val memory = interAppTracker?.memory ?: LaunchMemory()
+    private val pendingReopens = PendingLaunches()
+    private val memories = LaunchMemories(interAppTracker?.memory ?: LaunchMemory())
+    private fun memory(input: StarterInput) = memories.forUser(input.userId)
     private val lockProbe = StarterLockProbe(SystemClock::uptimeMillis) { module.log(Log.WARN, TAG, it) }
     private val effects = StarterSideEffects(lockProbe) { code, error -> module.log(Log.WARN, TAG, code, error) }
-    private val queries = StarterQueryCache(effects)
+    private val queries = StarterQueryCache(effects, pendingReopens::clear)
     private val platform = StarterLaunchEnvironment(configuration, environment, queries)
     private fun now() = SystemClock.uptimeMillis()
 
@@ -71,14 +72,14 @@ internal class ActivityStarterZoomInjector(
                     val input = runCatching { readSnapshot(chain.thisObject, method.name) }
                         .onFailure { module.log(Log.WARN, TAG, "ZOOM_PREEMPT_FAILED", it) }.getOrNull()
                     val preempted = input != null && runCatching {
-                        executePreempt(input, LaunchDecider.decidePreempt(input.snapshot, environmentFor(input), memory, now()))
+                        executePreempt(input, LaunchDecider.decidePreempt(input.snapshot, environmentFor(input), memory(input), now()))
                     }.onFailure { module.log(Log.WARN, TAG, "ZOOM_PREEMPT_FAILED", it) }.getOrDefault(false)
                     if (preempted) 0 else {
                         if (input != null) runCatching {
                             val injectionInput = readSnapshot(chain.thisObject, method.name)
                             if (injectionInput != null) {
                                 traceEntry(injectionInput)
-                                executeInject(injectionInput, LaunchDecider.decideInject(injectionInput.snapshot, environmentFor(injectionInput), memory, now()))
+                                executeInject(injectionInput, LaunchDecider.decideInject(injectionInput.snapshot, environmentFor(injectionInput), memory(injectionInput), now()))
                             }
                         }.onFailure { module.log(Log.WARN, TAG, "ZOOM_INJECT_FAILED", it) }
                         chain.proceed()
@@ -124,6 +125,7 @@ internal class ActivityStarterZoomInjector(
         val rawUid = intField(starter, "mCallingUid")
         val uid = rawUid.takeIf { it > 0 } ?: request?.let { intField(it, "callingUid") } ?: 0
         val resolved = (request?.let { readField(it, "resolveInfo") } as? android.content.pm.ResolveInfo)?.activityInfo?.packageName
+            ?: (request?.let { readField(it, "activityInfo") } as? android.content.pm.ActivityInfo)?.packageName
         val options = optionsBundle(starter, request)
         val snapshot = LaunchSnapshot(
             stage = stage, action = intent.action, dataString = intent.dataString, flags = intent.flags,
@@ -147,7 +149,8 @@ internal class ActivityStarterZoomInjector(
     }
 
     private fun environmentFor(input: StarterInput): LaunchEnvironment = object : LaunchEnvironment by platform {
-        override fun resolveImplicitTarget(): String? = input.snapshot.resolvedTarget ?: queries.resolve(input.intent)
+        override val enabled get() = input.userId >= 0 && platform.enabled
+        override fun resolveImplicitTarget(): String? = input.snapshot.resolvedTarget
         /** AOSP execute 在进入 mGlobalLock 前调用；实际以探针为准，未知或持锁时禁止查询。 */
         override fun fromControlCenter(pkg: String): Boolean {
             val observation = controlCenter.get()?.takeIf { it.first === input.starter }?.second ?: return false
@@ -157,7 +160,7 @@ internal class ActivityStarterZoomInjector(
         }
     }
 
-    private fun applyEvents(decision: LaunchDecision) {
+    private fun applyEvents(decision: LaunchDecision, memory: LaunchMemory) {
         decision.events.forEach { event -> when (event) {
             is LaunchEvent.Log -> ModuleLog.debug(event.tag) { event.code }
             is LaunchEvent.ReturnUpdate -> memory.apply(event.check)
@@ -165,14 +168,15 @@ internal class ActivityStarterZoomInjector(
         if (decision is LaunchDecision.PassThrough) decision.log?.let { code -> ModuleLog.debug(TAG) { code } }
     }
 
-    private fun record(caller: String, target: String) {
+    private fun record(caller: String, target: String, memory: LaunchMemory) {
         if (interAppTracker == null) return
         memory.record(caller, target, now())
         ModuleLog.debug("FFINTER") { "INTER_APP_RECORD " + caller + "->" + target }
     }
 
     private fun executePreempt(input: StarterInput, decision: LaunchDecision): Boolean {
-        applyEvents(decision)
+        val memory = memory(input)
+        applyEvents(decision, memory)
         return when (decision) {
             is LaunchDecision.SwallowDuplicate -> true
             is LaunchDecision.ReopenInZoom -> {
@@ -184,23 +188,24 @@ internal class ActivityStarterZoomInjector(
                 } else {
                     val key = input.userId.toString() + "|" + decision.target
                     val fingerprint = decision.linkKey ?: input.intent.toUri(0)
-                    if (pendingReopens.put(key, fingerprint) == fingerprint) return true
+                    val ticket = pendingReopens.acquire(key, fingerprint) ?: return true
                     val settings = configuration.snapshot
                     ModuleLog.debug(TAG) { "ZOOM_REOPEN_SCHEDULED_" + input.snapshot.stage + "_" + decision.target }
-                    effects.reopenInZoom(decision.target, LaunchRules.REOPEN_DELAY_MS,
+                    effects.reopenInZoom(decision.target, input.userId, LaunchRules.REOPEN_DELAY_MS,
                         valid = { configuration.snapshot == settings && platform.enabled && platform.zoomLaunch &&
-                            platform.deviceUnlocked(false) && !platform.isExcluded(decision.target) },
+                            platform.deviceUnlocked(false) && !platform.isExcluded(decision.target) &&
+                            effects.isUserVisible(input.userId) },
                         start = { zoom ->
                             preempting.set(true)
                             try { replay.start(if (zoom) ZoomLaunchSpec.bundle(input.options) else input.options) }
                             finally { preempting.remove() }
                         },
-                        current = { pendingReopens[key] == fingerprint },
+                        current = { pendingReopens.current(key, ticket) },
                         complete = { started, zoomStarted ->
-                            pendingReopens.remove(key, fingerprint)
+                            pendingReopens.finish(key, ticket)
                             if (started && zoomStarted) {
                                 memory.markLink(decision.linkKey, now())
-                                record(decision.callingPackage, decision.target)
+                                record(decision.callingPackage, decision.target, memory)
                                 memory.markZoomed(decision.target, false, now())
                             }
                         })
@@ -216,7 +221,7 @@ internal class ActivityStarterZoomInjector(
                         memory.markZoomed(decision.target, decision.selfRelaunch, now())
                         if (decision.linkKey != null) {
                             memory.markLink(decision.linkKey, now())
-                            record(decision.callingPackage, decision.target)
+                            record(decision.callingPackage, decision.target, memory)
                         }
                     }
                 }
@@ -231,7 +236,8 @@ internal class ActivityStarterZoomInjector(
     }
 
     private fun executeInject(input: StarterInput, decision: LaunchDecision) {
-        applyEvents(decision)
+        val memory = memory(input)
+        applyEvents(decision, memory)
         if (decision !is LaunchDecision.Inject) return
         val reason = decision.reason
         input.intent.putExtra(ZoomLaunchSpec.EXTRA_APPLIED, 1)
@@ -247,7 +253,7 @@ internal class ActivityStarterZoomInjector(
         ModuleLog.debug(TAG) { "ZOOM_INJECTED_" + reason }
         if (decision.markSelfRelaunch && decision.selfTarget != null) memory.markZoomed(decision.selfTarget, true, now())
         if (reason == "notification") effects.collapseShade(LaunchRules.SHADE_COLLAPSE_DELAY_MS)
-        decision.recordInterApp?.let { (caller, target) -> record(caller, target) }
+        decision.recordInterApp?.let { (caller, target) -> record(caller, target, memory) }
     }
 
     private fun traceEntry(input: StarterInput) {

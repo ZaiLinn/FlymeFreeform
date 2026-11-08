@@ -35,4 +35,16 @@ class DeferredLaunchTest {
             { calls += it; true }, { _, zoom, started -> assertTrue(zoom); assertTrue(started) })
         assertEquals(listOf(true), calls)
     }
+    @Test fun supersededDuringDelayDoesNotReplayOldRequest() {
+        var current = true
+        var deferred: (() -> Unit)? = null
+        var completed = false
+        DeferredLaunch.run(400, { true }, { true }, { _, action -> deferred = action },
+            { error("superseded request must not start") },
+            { _, _, started -> completed = true; assertFalse(started) }, { current })
+        current = false
+        deferred!!()
+        assertTrue(completed)
+    }
+
 }

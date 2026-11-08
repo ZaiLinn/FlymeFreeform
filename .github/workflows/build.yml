@@ -34,6 +34,11 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           ls "$ANDROID_HOME/platforms" || true
 
+      - name: Starter safety and unit tests
+        run: |
+          sh scripts/test-starter-safety.sh
+          sh gradlew :app:compileReleaseKotlin :app:testDebugUnitTest --build-cache --stacktrace
+
       - name: Assemble release
         run: |
           chmod +x gradlew

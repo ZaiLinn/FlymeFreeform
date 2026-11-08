@@ -8,7 +8,7 @@ package io.github.zailinn.flymefreeform.hook
  * 不能在 starter 钩子里同步调用，调用方须投递到别的线程执行。
  */
 internal object ZoomTaskCloser {
-    /** 参数为包名；关掉了该包最上层的普通小窗时返回 true。 */
+    /** 参数为包名与 Request 用户；关掉了该包最上层的普通小窗时返回 true。 */
     @Volatile
-    var closer: ((String) -> Boolean)? = null
+    var closer: ((String, Int) -> Boolean)? = null
 }

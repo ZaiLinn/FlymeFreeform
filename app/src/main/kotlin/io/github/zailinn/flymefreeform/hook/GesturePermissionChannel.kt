@@ -40,8 +40,10 @@ internal class GesturePermissionClient(private val changed: () -> Unit) {
     }
 
     private fun request(context: Context) {
-        context.sendBroadcast(Intent(REQUEST).setPackage("android").putExtra(CLIENT, context.packageName),
-            null, options())
+        runCatching {
+            context.sendBroadcast(Intent(REQUEST).setPackage("android").putExtra(CLIENT, context.packageName),
+                null, options())
+        }
     }
 }
 
@@ -55,6 +57,7 @@ internal class GesturePermissionPublisher(
     private var switchingUser = false
 
     fun start() {
+      try {
         context.registerReceiver(object : BroadcastReceiver() {
             override fun onReceive(owner: Context?, intent: Intent?) {
                 if (intent?.action == "android.intent.action.USER_SWITCHED") {
@@ -70,6 +73,7 @@ internal class GesturePermissionPublisher(
         }, IntentFilter(REQUEST).apply { addAction("android.intent.action.USER_SWITCHED") },
             null, handler, Context.RECEIVER_EXPORTED)
         publish()
+      } catch (error: Exception) { failure(error) }
     }
 
     fun foregroundChanged() { switchingUser = false; publish() }

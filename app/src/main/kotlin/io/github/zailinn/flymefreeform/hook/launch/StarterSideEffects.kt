@@ -21,9 +21,12 @@ internal class StarterSideEffects(
         { task -> Thread(task, "FlymeFreeform-StarterQueries") },
         java.util.concurrent.ThreadPoolExecutor.AbortPolicy()).apply { allowCoreThreadTimeOut(true) }
 
-    fun background(name: String, block: () -> Unit) {
-        try { worker.execute { execute(name, block) } }
-        catch (error: java.util.concurrent.RejectedExecutionException) { throw error }
+    fun background(name: String, block: () -> Unit): Boolean = try {
+        worker.execute { execute(name, block) }
+        true
+    } catch (error: java.util.concurrent.RejectedExecutionException) {
+        log("STARTER_QUERY_REJECTED_" + name, error)
+        false
     }
 
     fun post(name: String, block: () -> Unit) { handler.post { execute(name, block) } }
@@ -41,11 +44,22 @@ internal class StarterSideEffects(
 
     fun canCloseZoomTask(): Boolean = ZoomTaskCloser.closer != null
 
-    fun reopenInZoom(target: String, delayMs: Long, valid: () -> Boolean,
+    /** 仅在已投递的重开事务中查询；资料用户也须处于可见状态才允许关窗。 */
+    fun isUserVisible(userId: Int): Boolean = runCatching {
+        lockProbe.assertOffStarter("reopen_user_visibility")
+        val context = systemContext() ?: return false
+        val user = android.os.UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId)
+        val owner = Context::class.java.getMethod("createContextAsUser", android.os.UserHandle::class.java,
+            Int::class.javaPrimitiveType).invoke(context, user, 0) as Context
+        val manager = owner.getSystemService(android.os.UserManager::class.java) ?: return false
+        manager.javaClass.getMethod("isUserVisible").invoke(manager) == true
+    }.getOrDefault(false)
+
+    fun reopenInZoom(target: String, userId: Int, delayMs: Long, valid: () -> Boolean,
         start: (Boolean) -> Boolean, current: () -> Boolean, complete: (Boolean, Boolean) -> Unit) {
         post("reopen_close") {
             io.github.zailinn.flymefreeform.hook.launch.decision.DeferredLaunch.run(
-                delayMs, valid, { ZoomTaskCloser.closer?.invoke(target) == true },
+                delayMs, valid, { ZoomTaskCloser.closer?.invoke(target, userId) == true },
                 { delay, action -> postDelayed("reopen_start", delay, action) }, start,
                 { closed, zoomStarted, started ->
                     complete(started, zoomStarted)

@@ -18,13 +18,14 @@ internal class HighResolutionIconRenderer(private val context: Context) {
         var drawable = info.getIcon(DisplayMetrics.DENSITY_XXXHIGH)
         var originalResource = false
         // 某些主题加载器只给出小位图；放大不会补回细节，优先尝试 APK 的自适应或矢量源。
-        if (drawable is BitmapDrawable && maxOf(drawable.bitmap.width, drawable.bitmap.height) < sizePx) {
+        val nativePixels = (drawable as? BitmapDrawable)?.bitmap?.let { maxOf(it.width, it.height) } ?: 0
+        if (nativePixels in 1 until sizePx) {
             runCatching {
                 val resources = context.packageManager.getResourcesForApplication(info.applicationInfo)
                 val resource = info.activityInfo.iconResource
                 val raw = resources.getDrawableForDensity(resource, DisplayMetrics.DENSITY_XXXHIGH, null)
                 if (raw is AdaptiveIconDrawable || raw is VectorDrawable ||
-                    (raw is BitmapDrawable && raw.bitmap.width > drawable.intrinsicWidth)) {
+                    (raw is BitmapDrawable && maxOf(raw.bitmap.width, raw.bitmap.height) > nativePixels)) {
                     drawable = raw
                     originalResource = true
                 }
