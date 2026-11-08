@@ -141,7 +141,7 @@
 
 ## 致谢
 
-- [Hoerire/FlymeFreeform](https://github.com/Hoerire/FlymeFreeform)：本项目直接 fork 的上游，作者 Hoerire；ColorOS 适配、「更多」面板接管、启动判定等大部分实现出自该项目
+- [Hoerire/FlymeFreeform](https://github.com/Hoerire/FlymeFreeform)：ColorOS 适配、「更多」面板接管、启动判定等大部分实现出自该项目
 - [Mangi-11/FlymeFreeform](https://github.com/Mangi-11/FlymeFreeform)：最初的上游来源，原作者 Mangi-11
 - [Flyme](https://www.flyme.com/)：小窗交互的设计参考
 - [libxposed API](https://github.com/libxposed/api)：现代 Xposed API
