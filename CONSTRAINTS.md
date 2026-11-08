@@ -1,6 +1,6 @@
 # FlymeFreeform 实现说明
 
-源码版本 1.4.6 / versionCode 2026110847（已构建并发布，未装机）　包名 `io.github.zailinn.flymefreeform`
+源码版本 1.4.7 / versionCode 2026110850（1.4.7 包为 2026110849，含改色不刷新的问题）　包名 `io.github.zailinn.flymefreeform`
 源码 `ZaiLinn/FlymeFreeform`（维护者 ZaiLinn；fork 自 `Hoerire/FlymeFreeform` ← `Mangi-11/FlymeFreeform`，致谢见 README）
 工作副本 `~/Documents/Code/FlymeFreeform`（macOS），临时文件 `tmp/`；构建、签名与发布见第六节。
 包名于 2026-11-08 由 `io.github.hoerire.flymefreeform` 改为现名，设备上的旧包名模块需卸载后再装新包。
@@ -352,6 +352,24 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
+2026-11-08 22:06 安装 1.4.8（2026110851，sha256 `86c49cf145d74b522799de80aae7ae2456bf8c51682a8158aa8c4f004e4c6007`，覆盖 1.4.7 `e06501ef…4eb7`）并经 restart-gate 重启 system_server。重启后 adb 断开，未读日志、未验证；待验证：4 个进程 `MODULE_CONFIG_READY`，改「更多」颜色后下次呼出即变色，开关中央预览后立即预取。按用户要求推送 main 并发布 GitHub Release v1.4.8（说明覆盖 1.3.10 以来改动）。注意：GitHub 上 v1.4.6 只有标签、没有 Release（第十节此前记为已发布，实际 Release 列表只有 v1.3.6 / v1.3.7 / v1.3.10）。
+
+2026-11-08 构建 1.4.8（2026110851），`out/FlymeFreeform-v1.4.8.apk`，sha256 `86c49cf145d74b522799de80aae7ae2456bf8c51682a8158aa8c4f004e4c6007`，release.keystore 签名，v1/v2/v3 与 zipalign 校验通过。在 1.4.7 基础上加入「更多」颜色改后立即生效（2026110850）与本轮两处修复（2026110851）。未安装、未提交、未发布；设备仍为 1.4.7。装机须重启 system_server。
+
+源码 versionCode 2026110851：复查后修两处。① 取色器选中全透明黑色（0x00000000）时，因与「跟随系统」的 0 相同，会被悄悄存成跟随系统；新增 `ModulePreferences.customRadialMoreColor`（透明度抬到 0x33 以上，结果永不为 0），取色器「确定」与对话框预览改用它，`coerceRadialMoreColor` 对非 0 值复用它；补单测 `pickedTransparentBlackStaysCustom`。② 删去已无调用的 `FrameworkConnectionRepository.setRadialMultiArcEnabled` / `setRadialArcCount`（圆弧条数统一走 `setRadialArcs`）。两处都只在模块 App 进程。编译、单测通过，未构建。装机须知不变：相对设备上的 1.4.7（2026110849），2026110850 改了 system_server 内的扇形绘制（协调器传入「更多」颜色），装下一包仍须重启 system_server。
+
+
+源码 versionCode 2026110850：用户反馈 1.4.7 把「更多」按钮改成白色后不立即生效。原因（读代码确认）：扇形按 `catalog.settings.radialMoreColor` 绘制，目录快照只在 `AppCatalogSnapshot.matches()` 不匹配时才重新加载，而 `matches()` 不含新加的颜色，要等前台切换等其他原因重载目录才变色。改为协调器在呼出时用最新设置 `lastSettings.radialMoreColor` 传给 `CornerRadialOverlayView.begin(moreColor)`，与中央预览各项同法；`matches()` 补上 `radialCenterPreview`、`radialCenterSizeDp`，开关或调整中央预览后立即重新加载并预取。编译、单测、lintVitalRelease 通过，未构建。1.4.7 的 GitHub Release 尚未发布。
+
+
+2026-11-08 构建 1.4.7（2026110849），`out/FlymeFreeform-v1.4.7.apk`，sha256 `e06501ef387fe95d04d8e43d2850ea1e6e74afa6b9b7448b4103ed7f29854eb7`。在 1.4.6 基础上加入「更多」按钮颜色与设置页整理。未安装、未提交、未发布。装机须重启 system_server（颜色绘制与中央预览在 system_server）。
+
+源码 versionCode 2026110849：设置页整理（用户要求）。新增 `SettingsGroup`（miuix `SmallTitle` + `Card`）。扇形设置分五组：呼出（触发位置、触发范围、保持挂起、横屏 / 游戏模式暂停）、扇形内容（扇形应用、补位来源、数量上限、扇形多圆弧）、外观与判定（图标形状、「更多」按钮颜色、命中范围）、中央预览（关闭时收起「显示应用名」「图标大小」）、「更多」面板（显示原有列表）。横屏 / 游戏模式按用户决定从小窗设置移回扇形设置。小窗设置：排除列表卡片置顶，下分「打开方式」（小窗跳转、解除限制、小窗数量）与「小窗操作」（小窗关闭、快速上滑）。扇形多圆弧由「开关 + 展开选条数」改为与触发位置相同的弹出列表 1–4 条，经 `setRadialArcs` 一次写入（1 条即关闭多圆弧并保留上次条数）；删去 `MultiArcPreference`、`ArcCountSelector` 及其四条字符串，摘要去掉「「更多」入口保留在默认圆弧」。横屏 / 游戏模式摘要按用户要求去掉「小窗功能不受影响」（README 同步）。设置的存储与功能不变。编译、单测、lintVitalRelease 通过，未构建。
+
+
+源码 versionCode 2026110848：新增「更多」按钮颜色（扇形设置，图标形状下方）。键 `radial_more_color`（ARGB Int），0 为跟随系统；自定义保留透明度但不低于 0x33（`coerceRadialMoreColor`）。扇形 `drawMoreItem` 自定义时底板取纯色，三点按 `MoreButtonColors.dotFor` 在 0xFF181818 / 0xFFE9E9E9 中取 WCAG 对比度更高者（半透明按叠在黑色上算），白底即黑点（用户要求）。设置页用 miuix `OverlayDialog` + `ColorPicker`，带按钮预览，可「跟随系统」或「确定」。经设置广播全量快照热生效。编译、单测 246 项（0 失败，3 跳过）、lintVitalRelease 通过，未构建。
+
+
 2026-11-08 构建 1.4.6（2026110847，sha256 `a78dda82c691df55237087765c62566c63cff734b72283cfb251ddd94d6ce517`），推送 main（`8ea53c4`）。按用户要求删除 GitHub Release v1.4.5 及其标签，发布 v1.4.6（说明覆盖 1.3.10 以来改动，并加入中央预览不再闪动）。1.4.6 尚未装机；设备仍为 1.4.5。
 
 
@@ -414,7 +432,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 | 项 | 值 |
 |---|---|
-| 版本 | 工作副本 1.4.6 / 2026110847（`out/FlymeFreeform-v1.4.6.apk`，sha256 `a78dda82…e517`，已发布 GitHub Release，未装机）；设备为 1.4.5 / 2026110845（`out/FlymeFreeform-v1.4.5.apk`，sha256 `61288bd1…d014`，2026-11-08 20:52 装并重启 system_server，之后强行停止模块 App）。v1.3.10 曾按用户要求覆盖重发（破例未加 versionName），重发资产为 2026110821 |
+| 版本 | 工作副本 1.4.7 / 2026110850（1.4.7 包为 2026110849，`out/FlymeFreeform-v1.4.7.apk`，sha256 `e06501ef…4eb7`，未装机、未发布；GitHub 最新 Release 为 v1.4.6）；设备为 1.4.5 / 2026110845（`out/FlymeFreeform-v1.4.5.apk`，sha256 `61288bd1…d014`，2026-11-08 20:52 装并重启 system_server，之后强行停止模块 App）。v1.3.10 曾按用户要求覆盖重发（破例未加 versionName），重发资产为 2026110821 |
 | 本地构建 | `out/FlymeFreeform-v1.4.1.apk`，sha256 `04d7b8e7662f83d8542a036cef3d3c73689fd85596cfe51caa62d554c63cccbf`，用户密钥签名，已装设备、未发布。1.4.0 `1e847fe3…f358` 有死锁勿用；1.3.12 `2ce93a54…6cfd`；1.3.11 `b56e0400…42bd`；`out/FlymeFreeform-v1.3.10.apk` 为重发的 Release 资产 `afc03c6b…65f0`，首发包 `83d94a5e…2bf3` 备份在 `tmp/FlymeFreeform-v1.3.10-83d94a5e.apk` |
 | 工作副本 | `~/Documents/Code/FlymeFreeform`，本轮分支 `refactor/starter-hook`，基线 `c7f8c21`；A=`55b6510`，B=`813837b`，框架服务=`4825e37`；审计第一至四组=`763f57e` / `725dfcd` / `576e8f3` / `6604b29`，第五组包括最终复核与构建闸门，均未推送。原 main = `origin/main`。v1.3.7（`5ce7888`）之后：用户网页提交 `bdb6a30`（README 致谢精简），`a454470` 新设置项、`5a89d85` 「更多」原有列表 + 字母索引 + 回桌面收起、`9d1c35d` 扇形外大内小 + 屏幕中央所选应用 + 内置面板回桌面收起、`c1d0893` 添加应用快速点击闪动，之后是 1.3.10 版本号与文档、用户网页提交 `e3681e4`（README 去上游链接）、方形「更多」修复、README 换 png 截图，重发 1.3.10 的版本号与文档（v1.3.10 tag 所指，`b3562e0`）。之后 2026-11-08 按功能分组提交 1.3.11–1.4.3 的改动：`8d015c7` 侧边栏目录缓存与悬空绑定、`530fd2b` 设置广播共享身份与完整快照、`bd5f490` 「最近」排除扇形固定项、`1dd1297` 「更多」打开时图标左移、`bdc667b` 双击横条关闭、`aef03c5` 应用互跳小窗与死锁修复（含关窗重开）、`ac8cb85` 文档与版本号；中间提交未单独编译，HEAD 编译与单测通过；均未推送。前三个功能提交均在临时 worktree 单独编译通过；`upstream` = Hoerire |
 | 已发布 | Release [v1.3.10](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.10)，资产 `FlymeFreeform-v1.3.10.apk`（sha256 见「本地构建」）；上一版 v1.3.7 资产 `a8344244…61d3` |
@@ -443,6 +461,8 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 3. 待评估：滑选时显示应用名
 
 ### 本轮的坑
+
+- 扇形视图里只跟显示有关的新设置（如「更多」按钮颜色）不能读 `catalog.settings`：目录快照只在 `AppCatalogSnapshot.matches()` 列出的字段变化时重载。新增显示类设置应由协调器在 `begin()` 时从 `lastSettings` 传入；影响目录挑选或预取的设置要加进 `matches()`。
 
 - **重启后设置页报「检测到多个框架服务」**：1.4.2 重启 system_server 后马上打开设置页出现，强停应用再开即恢复「已连接」。
   推断 lspd（未随 system_server 重启）在模块应用启动时把服务递了两次，`liveServices` 里有两个对象，于是禁用写入防配置分叉；未取到绑定日志（应用日志超配额被丢）。现已增加底层 Binder 去重与死亡清理，待用户授权设备验证。
