@@ -46,7 +46,7 @@ internal class ColorOsSidebarEntryEndpoint(
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
-                sentFromUid != moduleUid()
+                !io.github.zailinn.flymefreeform.config.TrustedSender.matches(sentFromUid, moduleUid())
             ) return
             configuration.applySettingsBroadcast(intent)
         }

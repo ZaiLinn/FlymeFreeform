@@ -62,7 +62,7 @@ internal class ProcessConfiguration(
         val receiver =
             object : BroadcastReceiver() {
                 override fun onReceive(context: Context?, intent: Intent?) {
-                    if (intent == null || sentFromUid != moduleUid(appContext)) return
+                    if (intent == null || !io.github.zailinn.flymefreeform.config.TrustedSender.matches(sentFromUid, moduleUid(appContext))) return
                     applySettingsBroadcast(intent)
                 }
             }

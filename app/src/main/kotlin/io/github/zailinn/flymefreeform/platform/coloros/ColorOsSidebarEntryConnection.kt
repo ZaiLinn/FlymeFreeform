@@ -47,17 +47,9 @@ internal class ColorOsSidebarEntryConnection(
     private var link: WarmLink? = null
     private var binding = false
 
-    /**
-     * 最近一次准备阶段解析出的用户信息。
-     *
-     * 连接回调可能晚于请求 deadline 才到达，那时 [current] 已被超时清空；
-     * 没有这份缓存就只能放弃建链，而 [binding] 已置真，后续请求再也不会重新绑定，
-     * 表现为「侧边栏目录永久不可用，直到进程被杀」。
-     */
-    private var lastUserId = -1
-    private var lastUid = -1
-    private var lastUserContext: Context? = null
-    private var preparing = false
+    private var preparing: Request? = null
+    private var boundContext: Context? = null
+    private var serviceConnection: ServiceConnection? = null
     private var pendingAfterBind: (() -> Unit)? = null
 
     private class WarmLink(
@@ -66,48 +58,45 @@ internal class ColorOsSidebarEntryConnection(
         val uid: Int,
         val userId: Int,
         val userContext: Context,
+        val death: IBinder.DeathRecipient,
     )
 
-    // DeathRecipient 的 SAM 方法是无参的 binderDied()，拿不到具体 binder，直接作废常驻连接。
-    private val death = IBinder.DeathRecipient { handler.post { dropLink(unbind = true) } }
-
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName, service: IBinder) {
-            if (name != COMPONENT) return
-            val warm = link
-            if (warm != null && warm.binder === service) return
-            val userId = current?.userId?.takeIf { it >= 0 } ?: lastUserId
-            if (userId < 0) return
-            val uid = current?.uid?.takeIf { it > 0 } ?: lastUid
-            if (uid <= 0) return
-            val userContext = current?.userContext ?: lastUserContext ?: return
-            val created = WarmLink(service, Messenger(service), uid, userId, userContext)
-            try {
-                service.linkToDeath(death, 0)
-            } catch (exception: RuntimeException) {
-                report(exception)
-                return
+    init {
+        context.registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == SidebarProtocol.ACTION_USER_SWITCHED) dropLink(unbind = true)
             }
-            link = created
-            handler.post {
+        }, android.content.IntentFilter(SidebarProtocol.ACTION_USER_SWITCHED), null, handler,
+            Context.RECEIVER_NOT_EXPORTED)
+    }
+
+    private fun connection(userContext: Context, userId: Int, uid: Int): ServiceConnection =
+        object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, service: IBinder) {
+                if (serviceConnection !== this || !binding || name != COMPONENT) return
+                val death = IBinder.DeathRecipient {
+                    handler.post { if (link?.binder === service) dropLink(unbind = true) }
+                }
+                try {
+                    service.linkToDeath(death, 0)
+                    link = WarmLink(service, Messenger(service), uid, userId, userContext, death)
+                } catch (exception: Exception) {
+                    report(exception)
+                    dropLink(unbind = true)
+                    return
+                }
                 val waiting = pendingAfterBind
                 pendingAfterBind = null
                 waiting?.invoke()
             }
-        }
 
-        override fun onServiceDisconnected(name: ComponentName) {
-            handler.post { dropLink(unbind = true) }
+            private fun disconnected() {
+                handler.post { if (serviceConnection === this) dropLink(unbind = true) }
+            }
+            override fun onServiceDisconnected(name: ComponentName) = disconnected()
+            override fun onBindingDied(name: ComponentName) = disconnected()
+            override fun onNullBinding(name: ComponentName) = disconnected()
         }
-
-        override fun onBindingDied(name: ComponentName) {
-            handler.post { dropLink(unbind = true) }
-        }
-
-        override fun onNullBinding(name: ComponentName) {
-            handler.post { dropLink(unbind = true) }
-        }
-    }
 
     /**
      * 发起一次目录/启动请求。
@@ -151,14 +140,11 @@ internal class ColorOsSidebarEntryConnection(
     }
 
     private fun prepareAndBind(request: Request) {
-        if (preparing) {
-            // 上一次准备还在路上：等它结束后重试一次。
-            handler.postDelayed({ if (current === request && link == null) prepareAndBind(request) }, 30L)
-            return
-        }
-        preparing = true
-        work(request) {
+        if (preparing != null) return
+        preparing = request
+        work(request, alwaysRun = true, onRejected = { releasePreparation(request) }) {
           try {
+            if (!request.active.get()) return@work
             val userId = ActivityManager::class.java.getMethod("getCurrentUser").invoke(null) as Int
             val user = UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId) as UserHandle
             val userContext =
@@ -181,16 +167,11 @@ internal class ColorOsSidebarEntryConnection(
                         "_user" + userId,
                     null,
                 )
-                preparing = false
                 handler.post { finish(request) }
                 return@work
             }
             request.uid = uid
-            lastUserId = userId
-            lastUid = uid
-            lastUserContext = userContext
             if (!request.active.get()) {
-                preparing = false
                 return@work
             }
             // 只在首次建立连接时唤醒侧边栏的 provider。
@@ -198,7 +179,6 @@ internal class ColorOsSidebarEntryConnection(
                 .acquireUnstableContentProviderClient(ColorOsSidebarTarget.PROVIDER_AUTHORITY)
                 ?: throw IllegalStateException("SIDEBAR_ENTRY_PROVIDER_UNAVAILABLE")
             provider.use { it.call(ColorOsSidebarTarget.PREPARE_METHOD, null, null) }
-            preparing = false
             if (!request.active.get()) return@work
             handler.post {
                 if (current !== request) return@post
@@ -211,20 +191,26 @@ internal class ColorOsSidebarEntryConnection(
                 pendingAfterBind = { if (current === request) link?.let { send(request, it) } }
                 if (!binding) {
                     val intent = Intent(SidebarEntryProtocol.BIND_ACTION).setComponent(COMPONENT)
+                    val connection = connection(userContext, userId, uid)
+                    serviceConnection = connection
+                    boundContext = userContext
+                    binding = true
                     binding = try {
-                        userContext.bindService(intent, Context.BIND_AUTO_CREATE, { action -> handler.post(action) }, serviceConnection)
+                        userContext.bindService(intent, Context.BIND_AUTO_CREATE, { action -> handler.post(action) }, connection)
                     } catch (exception: RuntimeException) {
                         report(exception)
                         false
                     }
                     if (!binding) {
+                        serviceConnection = null
+                        boundContext = null
                         pendingAfterBind = null
                         finish(request)
                     }
                 }
             }
           } finally {
-            preparing = false
+            handler.post { releasePreparation(request) }
           }
         }
     }
@@ -304,28 +290,42 @@ internal class ColorOsSidebarEntryConnection(
         link = null
         pendingAfterBind = null
         if (warm != null) {
-            try { warm.binder.unlinkToDeath(death, 0) } catch (_: RuntimeException) {}
+            try { warm.binder.unlinkToDeath(warm.death, 0) } catch (_: RuntimeException) {}
+        }
+        val connection = serviceConnection
+        val bindingContext = boundContext
+        serviceConnection = null
+        boundContext = null
+        val wasBinding = binding
+        binding = false
+        if (unbind && wasBinding && connection != null && bindingContext != null) {
+            try { bindingContext.unbindService(connection) } catch (_: RuntimeException) {}
         }
         current?.let { finish(it) }
-        if (binding) {
-            binding = false
-            try {
-                (warm?.userContext ?: context).unbindService(serviceConnection)
-            } catch (_: RuntimeException) {}
-        }
     }
 
-    private fun work(request: Request, action: () -> Unit) {
+    private fun releasePreparation(request: Request) {
+        if (preparing !== request) return
+        preparing = null
+        current?.takeIf { it !== request && link == null }?.let(::prepareAndBind)
+    }
+
+    private fun work(request: Request, alwaysRun: Boolean = false,
+        onRejected: () -> Unit = {}, action: () -> Unit) {
         try {
             worker.execute {
-                if (!request.active.get()) return@execute
+                if (!alwaysRun && !request.active.get()) return@execute
                 try { action() }
                 catch (exception: Exception) {
                     if (exception is InvocationTargetException && exception.cause is Error) throw exception.cause as Error
                     handler.post { report(exception); finish(request) }
                 }
             }
-        } catch (exception: RuntimeException) { report(exception); finish(request) }
+        } catch (exception: RuntimeException) {
+            report(exception)
+            finish(request)
+            onRejected()
+        }
     }
 
     private fun report(exception: Exception) {
