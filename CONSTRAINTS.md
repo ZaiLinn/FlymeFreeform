@@ -352,6 +352,9 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
+2026-11-08 发布 v1.4.5：`refactor/starter-hook` 按功能补提交 5 个后快进合入 main，再合并远端 `f98371b`（README 兼容系统改为 ColorOS 15），推送 ZaiLinn/FlymeFreeform main（`f6dfaca`）。Release v1.4.5 附 `FlymeFreeform-v1.4.5.apk`（sha256 `61288bd1…d014`），说明覆盖 1.3.10 以来的改动；1.4.0–1.4.4 未单独发布。用户已在设备上确认「更多」不再左移。
+
+
 2026-11-08 20:52 安装 1.4.5（2026110845，sha256 `61288bd1b65513b6d3465a3911b142e0289b9cfb099e29785d02fec34841d014`）并重启 system_server，随后强行停止模块 App。重启后 4 个进程均 `MODULE_CONFIG_READY`，starter 钩子、手势 coordinator、双击横条钩子已装；`STARTER_EFFECT_FAILED_query_warmup` 不再出现，无锁违规、探针不可用或手势许可失败。首次打开「更多」：`PANEL_INDEX_INSET laidOut=true` 紧接 `PANEL_INDEX_INSET_BEFORE_DRAW`，即内边距在首帧绘制前补上、该帧被取消（pre-draw 时已布局属正常）；是否仍左移待用户目测。X 小窗内换链接重开尚未测。
 
 
