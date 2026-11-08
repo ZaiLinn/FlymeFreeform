@@ -320,7 +320,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-08 （Asia/Shanghai，取设备时间）
+更新时间：2026-11-08 13:40（Asia/Shanghai）
 
 | 项 | 值 |
 |---|---|
