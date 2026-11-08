@@ -93,6 +93,18 @@ internal class FrameworkConnectionRepository(private val context: Context) {
     fun setRadialKeepOpen(enabled: Boolean) =
         updateSettings { it.copy(radialKeepOpen = enabled) }
 
+    fun setPanelNativeList(enabled: Boolean) =
+        updateSettings { it.copy(panelNativeList = enabled) }
+
+    fun setRadialCenterPreview(enabled: Boolean) =
+        updateSettings { it.copy(radialCenterPreview = enabled) }
+
+    fun setRadialCenterLabel(enabled: Boolean) =
+        updateSettings { it.copy(radialCenterLabel = enabled) }
+
+    fun setRadialCenterSizeDp(sizeDp: Int) =
+        updateSettings { it.copy(radialCenterSizeDp = ModulePreferences.coerceRadialCenterSizeDp(sizeDp)) }
+
     fun setRadialMaxItems(count: Int) =
         updateSettings {
             it.copy(radialMaxItems = ModulePreferences.coerceRadialMaxItems(count))

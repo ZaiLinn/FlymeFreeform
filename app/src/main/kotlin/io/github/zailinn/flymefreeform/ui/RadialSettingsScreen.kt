@@ -22,12 +22,16 @@ import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.CenterFocusStrong
 import androidx.compose.material.icons.rounded.DonutLarge
+import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Straighten
 import androidx.compose.material.icons.rounded.SwipeRight
+import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
+import androidx.compose.material.icons.rounded.Title
+import androidx.compose.material.icons.rounded.ZoomIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +81,10 @@ internal fun RadialSettingsScreen(
     onRadialFillSourceChange: (Int) -> Unit,
     onIconShapeChange: (Int) -> Unit,
     onRadialKeepOpenChange: (Boolean) -> Unit,
+    onPanelNativeListChange: (Boolean) -> Unit,
+    onRadialCenterPreviewChange: (Boolean) -> Unit,
+    onRadialCenterLabelChange: (Boolean) -> Unit,
+    onRadialCenterSizeChange: (Int) -> Unit,
     onNavigateToPinnedApps: () -> Unit,
 ) {
     val enabled = state.settingsEditable && state.settings.enabled
@@ -151,6 +159,43 @@ internal fun RadialSettingsScreen(
                     summary = stringResource(R.string.radial_keep_open_summary),
                     enabled = enabled,
                     startAction = { PreferenceIcon(Icons.Rounded.PushPin, enabled) },
+                )
+                SwitchPreference(
+                    checked = state.settings.radialCenterPreview,
+                    onCheckedChange = onRadialCenterPreviewChange,
+                    title = stringResource(R.string.radial_center_preview_title),
+                    summary = stringResource(R.string.radial_center_preview_summary),
+                    enabled = enabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.ZoomIn, enabled) },
+                )
+                SwitchPreference(
+                    checked = state.settings.radialCenterLabel,
+                    onCheckedChange = onRadialCenterLabelChange,
+                    title = stringResource(R.string.radial_center_label_title),
+                    summary = stringResource(R.string.radial_center_label_summary),
+                    enabled = enabled && state.settings.radialCenterPreview,
+                    startAction = { PreferenceIcon(Icons.Rounded.Title, enabled && state.settings.radialCenterPreview) },
+                )
+                RemoteDpSliderPreference(
+                    icon = Icons.Rounded.PhotoSizeSelectLarge,
+                    confirmedValue = state.settings.radialCenterSizeDp,
+                    isUpdating = state.isUpdating,
+                    enabled = enabled && state.settings.radialCenterPreview,
+                    title = stringResource(R.string.radial_center_size_title),
+                    summary = stringResource(R.string.radial_center_size_summary),
+                    minDp = ModulePreferences.MIN_RADIAL_CENTER_SIZE_DP,
+                    maxDp = ModulePreferences.MAX_RADIAL_CENTER_SIZE_DP,
+                    coerceDp = ModulePreferences::coerceRadialCenterSizeDp,
+                    onPreviewChange = {},
+                    onCommit = onRadialCenterSizeChange,
+                )
+                SwitchPreference(
+                    checked = state.settings.panelNativeList,
+                    onCheckedChange = onPanelNativeListChange,
+                    title = stringResource(R.string.panel_native_list_title),
+                    summary = stringResource(R.string.panel_native_list_summary),
+                    enabled = enabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.GridView, enabled) },
                 )
                 ArrowPreference(
                     title = stringResource(R.string.radial_apps_title),

@@ -45,6 +45,10 @@ internal object ModulePreferences {
     const val KEY_RADIAL_ARC_COUNT = "radial_arc_count"
     const val KEY_RADIAL_FILL_SOURCE = "radial_fill_source"
     const val KEY_ICON_SHAPE = "icon_shape"
+    const val KEY_PANEL_NATIVE_LIST = "panel_native_list"
+    const val KEY_RADIAL_CENTER_PREVIEW = "radial_center_preview"
+    const val KEY_RADIAL_CENTER_LABEL = "radial_center_label"
+    const val KEY_RADIAL_CENTER_SIZE_DP = "radial_center_size_dp"
     const val DEFAULT_ENABLED = false
     const val DEFAULT_CORNER_ENABLED = true
     const val DEFAULT_CORNER_TRIGGER_RANGE_DP = 84
@@ -63,6 +67,13 @@ internal object ModulePreferences {
     const val DEFAULT_ZOOM_ALLOW_ANY_APP = false
     const val DEFAULT_ZOOM_LAUNCH = false
     const val DEFAULT_RADIAL_KEEP_OPEN = false
+    const val DEFAULT_PANEL_NATIVE_LIST = false
+    const val DEFAULT_RADIAL_CENTER_PREVIEW = false
+    const val DEFAULT_RADIAL_CENTER_LABEL = true
+    /** 屏幕中央所选应用卡片里的图标边长。 */
+    const val DEFAULT_RADIAL_CENTER_SIZE_DP = 96
+    const val MIN_RADIAL_CENTER_SIZE_DP = 48
+    const val MAX_RADIAL_CENTER_SIZE_DP = 160
     /** 默认圆弧固定项的上限。内侧圆弧各自的上限见 RadialArcPlan.pinCapacity。 */
     const val MAX_PINNED_APPS = 6
     /** 默认圆弧同时显示的条目数：1–6，默认 6。 */
@@ -97,6 +108,9 @@ internal object ModulePreferences {
 
     fun coerceRadialHitRangeDp(value: Int): Int =
         value.coerceIn(MIN_RADIAL_HIT_RANGE_DP, MAX_RADIAL_HIT_RANGE_DP)
+
+    fun coerceRadialCenterSizeDp(value: Int): Int =
+        value.coerceIn(MIN_RADIAL_CENTER_SIZE_DP, MAX_RADIAL_CENTER_SIZE_DP)
 
     fun coerceZoomMaxWindowCount(value: Int): Int =
         value.coerceIn(MIN_ZOOM_MAX_WINDOW_COUNT, MAX_ZOOM_MAX_WINDOW_COUNT)

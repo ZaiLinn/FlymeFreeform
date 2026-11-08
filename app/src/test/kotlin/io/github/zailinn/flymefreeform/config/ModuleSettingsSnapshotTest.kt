@@ -132,6 +132,36 @@ class ModuleSettingsSnapshotTest {
     }
 
     @Test
+    fun centerPreviewDefaultsAndRoundTrips() {
+        val preferences = InMemoryPreferences()
+        val initial = ModuleSettingsSnapshot.readFrom(preferences)
+        assertEquals(false, initial.radialCenterPreview)
+        assertEquals(true, initial.radialCenterLabel)
+        ModuleSettingsSnapshot(radialCenterPreview = true, radialCenterLabel = false).writeTo(preferences.edit()).commit()
+        val stored = ModuleSettingsSnapshot.readFrom(preferences)
+        assertEquals(true, stored.radialCenterPreview)
+        assertEquals(false, stored.radialCenterLabel)
+    }
+
+    @Test
+    fun centerSizeDefaultsAndClamps() {
+        val preferences = InMemoryPreferences()
+        assertEquals(ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP, ModuleSettingsSnapshot.readFrom(preferences).radialCenterSizeDp)
+        ModuleSettingsSnapshot(radialCenterSizeDp = 120).writeTo(preferences.edit()).commit()
+        assertEquals(120, ModuleSettingsSnapshot.readFrom(preferences).radialCenterSizeDp)
+        preferences.edit().putInt(ModulePreferences.KEY_RADIAL_CENTER_SIZE_DP, 999).commit()
+        assertEquals(ModulePreferences.MAX_RADIAL_CENTER_SIZE_DP, ModuleSettingsSnapshot.readFrom(preferences).radialCenterSizeDp)
+    }
+
+    @Test
+    fun panelNativeListDefaultsOffAndRoundTrips() {
+        val preferences = InMemoryPreferences()
+        assertEquals(false, ModuleSettingsSnapshot.readFrom(preferences).panelNativeList)
+        ModuleSettingsSnapshot(panelNativeList = true).writeTo(preferences.edit()).commit()
+        assertEquals(true, ModuleSettingsSnapshot.readFrom(preferences).panelNativeList)
+    }
+
+    @Test
     fun iconShapeRoundTripsAndRejectsUnknownValues() {
         val preferences = InMemoryPreferences()
         assertEquals(ModulePreferences.ICON_SHAPE_CIRCLE, ModuleSettingsSnapshot.readFrom(preferences).iconShape)

@@ -41,6 +41,14 @@ internal data class ModuleSettingsSnapshot(
     val radialFillSource: Int = ModulePreferences.DEFAULT_RADIAL_FILL_SOURCE,
     /** 图标外形，取值见 ModulePreferences.ICON_SHAPE_*。 */
     val iconShape: Int = ModulePreferences.DEFAULT_ICON_SHAPE,
+    /** 「更多」面板保持侧边栏原有的「工具 + 全部应用」，不改写为「收藏 + 最近」。 */
+    val panelNativeList: Boolean = ModulePreferences.DEFAULT_PANEL_NATIVE_LIST,
+    /** 滑选时在屏幕正中显示所选应用的大图标。 */
+    val radialCenterPreview: Boolean = ModulePreferences.DEFAULT_RADIAL_CENTER_PREVIEW,
+    /** 屏幕正中的卡片是否带应用名；仅在 [radialCenterPreview] 打开时生效。 */
+    val radialCenterLabel: Boolean = ModulePreferences.DEFAULT_RADIAL_CENTER_LABEL,
+    /** 屏幕中央卡片的图标边长（dp），48–160。 */
+    val radialCenterSizeDp: Int = ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP,
     /**
      * 第 2～4 条圆弧各自的固定项（下标 0 对应第 2 条）。空列表表示该圈用最近使用的应用补满。
      * 与圆弧条数无关，始终保存三份。
@@ -80,6 +88,13 @@ internal data class ModuleSettingsSnapshot(
             .remove(ModulePreferences.LEGACY_KEY_ZOOM_LAUNCH_CONTROL_CENTER)
             .remove(ModulePreferences.LEGACY_KEY_ZOOM_LAUNCH_INTER_APP)
             .putBoolean(ModulePreferences.KEY_RADIAL_KEEP_OPEN, radialKeepOpen)
+            .putBoolean(ModulePreferences.KEY_PANEL_NATIVE_LIST, panelNativeList)
+            .putBoolean(ModulePreferences.KEY_RADIAL_CENTER_PREVIEW, radialCenterPreview)
+            .putBoolean(ModulePreferences.KEY_RADIAL_CENTER_LABEL, radialCenterLabel)
+            .putInt(
+                ModulePreferences.KEY_RADIAL_CENTER_SIZE_DP,
+                ModulePreferences.coerceRadialCenterSizeDp(radialCenterSizeDp),
+            )
             .putInt(
                 ModulePreferences.KEY_RADIAL_MAX_ITEMS,
                 ModulePreferences.coerceRadialMaxItems(radialMaxItems),
@@ -253,6 +268,25 @@ internal data class ModuleSettingsSnapshot(
                     ModulePreferences.KEY_RADIAL_KEEP_OPEN,
                     ModulePreferences.DEFAULT_RADIAL_KEEP_OPEN,
                 ),
+                panelNativeList = preferences.getBoolean(
+                    ModulePreferences.KEY_PANEL_NATIVE_LIST,
+                    ModulePreferences.DEFAULT_PANEL_NATIVE_LIST,
+                ),
+                radialCenterPreview = preferences.getBoolean(
+                    ModulePreferences.KEY_RADIAL_CENTER_PREVIEW,
+                    ModulePreferences.DEFAULT_RADIAL_CENTER_PREVIEW,
+                ),
+                radialCenterLabel = preferences.getBoolean(
+                    ModulePreferences.KEY_RADIAL_CENTER_LABEL,
+                    ModulePreferences.DEFAULT_RADIAL_CENTER_LABEL,
+                ),
+                radialCenterSizeDp =
+                    ModulePreferences.coerceRadialCenterSizeDp(
+                        preferences.getInt(
+                            ModulePreferences.KEY_RADIAL_CENTER_SIZE_DP,
+                            ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP,
+                        ),
+                    ),
                 radialMaxItems =
                     ModulePreferences.coerceRadialMaxItems(
                         preferences.getInt(

@@ -58,6 +58,10 @@ internal fun FlymeFreeformNavHost(
     onZoomAllowAnyAppChange: (Boolean) -> Unit,
     onZoomLaunchChange: (Boolean) -> Unit,
     onRadialKeepOpenChange: (Boolean) -> Unit,
+    onPanelNativeListChange: (Boolean) -> Unit,
+    onRadialCenterPreviewChange: (Boolean) -> Unit,
+    onRadialCenterLabelChange: (Boolean) -> Unit,
+    onRadialCenterSizeChange: (Int) -> Unit,
     onRadialMaxItemsChange: (Int) -> Unit,
     onRadialMultiArcEnabledChange: (Boolean) -> Unit,
     onRadialArcCountChange: (Int) -> Unit,
@@ -165,6 +169,10 @@ internal fun FlymeFreeformNavHost(
                 onRadialFillSourceChange = onRadialFillSourceChange,
                 onIconShapeChange = onIconShapeChange,
                 onRadialKeepOpenChange = onRadialKeepOpenChange,
+                onPanelNativeListChange = onPanelNativeListChange,
+                onRadialCenterPreviewChange = onRadialCenterPreviewChange,
+                onRadialCenterLabelChange = onRadialCenterLabelChange,
+                onRadialCenterSizeChange = onRadialCenterSizeChange,
                 onNavigateToPinnedApps = navigateToPinnedApps,
             )
         }

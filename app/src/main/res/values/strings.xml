@@ -76,6 +76,14 @@
     <string name="zoom_max_windows_title">小窗数量</string>
     <string name="zoom_max_windows_summary">同时存在的自由浮窗个数；跟随系统时不改写，由系统或其他模块决定</string>
     <string name="zoom_max_windows_follow_system">跟随系统</string>
+    <string name="radial_center_preview_title">屏幕中央显示所选应用</string>
+    <string name="radial_center_preview_summary">滑选时在屏幕正中实时显示所选应用的大图标</string>
+    <string name="radial_center_label_title">显示应用名</string>
+    <string name="radial_center_label_summary">屏幕中央的图标下方同时显示应用名</string>
+    <string name="radial_center_size_title">中央图标大小</string>
+    <string name="radial_center_size_summary">屏幕中央卡片里的图标边长；超出屏幕可用区域时自动缩小</string>
+    <string name="panel_native_list_title">「更多」显示原有列表</string>
+    <string name="panel_native_list_summary">不改写为收藏与最近，显示侧边栏原有的工具与全部应用</string>
     <string name="icon_shape_title">图标形状</string>
     <string name="icon_shape_summary">扇形、「更多」面板与本应用列表里的图标统一为同一外形</string>
     <string name="icon_shape_circle">圆形</string>
