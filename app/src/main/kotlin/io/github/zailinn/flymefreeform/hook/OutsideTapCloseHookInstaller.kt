@@ -15,6 +15,7 @@ import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.zailinn.flymefreeform.config.OutsideTapCloseMode
 import io.github.zailinn.flymefreeform.gesture.OutsideTapGestureEngine
+import io.github.zailinn.flymefreeform.log.ModuleLog
 import io.github.zailinn.flymefreeform.platform.coloros.ColorOsDisplayContentImeAccess
 import io.github.zailinn.flymefreeform.platform.coloros.ColorOsTaskImeBoundsAccess
 import java.lang.reflect.Field
@@ -159,11 +160,59 @@ internal class OutsideTapCloseHookInstaller(
                     }
                     result
                 }
+            installCaptionDoubleTap(classLoader, access)
             module.log(Log.INFO, TAG, "OUTSIDE_TAP_INPUT_REGION_HOOK_INSTALLED")
         } catch (exception: ReflectiveOperationException) {
             module.log(Log.WARN, TAG, "OUTSIDE_TAP_TARGET_UNAVAILABLE", exception)
         } catch (exception: LinkageError) {
             module.log(Log.WARN, TAG, "OUTSIDE_TAP_TARGET_LINKAGE_FAILED", exception)
+        }
+    }
+
+    /**
+     * 「双击横条」：双击普通小窗底部横条时关闭该小窗。
+     *
+     * 系统的 FlexibleTaskCaptionView.onDoubleTap 只处理迷你小窗（退出迷你态或与前台交换），
+     * 普通小窗上返回 false 不做事；这里只在原方法返回 false 时接手，迷你小窗的原生双击保持不变。
+     */
+    private fun installCaptionDoubleTap(classLoader: ClassLoader, access: ColorOsOutsideTapAccess) {
+        try {
+            val onDoubleTap =
+                classLoader
+                    .loadClass(FLEXIBLE_TASK_CAPTION_VIEW_CLASS)
+                    .getDeclaredMethod("onDoubleTap", MotionEvent::class.java)
+            module
+                .hook(onDoubleTap)
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .setId("flymefreeform.system.caption_double_tap_close")
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    val caption = chain.thisObject
+                    val settings = configuration.snapshot
+                    if (
+                        result == false &&
+                            caption != null &&
+                            settings.enabled &&
+                            settings.outsideTapCloseMode == OutsideTapCloseMode.CaptionDoubleTap
+                    ) {
+                        try {
+                            if (access.closeCaptionTask(caption)) {
+                                ModuleLog.debug(TAG) { "CAPTION_DOUBLE_TAP_CLOSE" }
+                                return@intercept true
+                            }
+                        } catch (exception: ReflectiveOperationException) {
+                            logFailure("CAPTION_DOUBLE_TAP_REFLECTION_FAILED", exception)
+                        } catch (exception: RuntimeException) {
+                            logFailure("CAPTION_DOUBLE_TAP_FAILED", exception)
+                        }
+                    }
+                    result
+                }
+            module.log(Log.INFO, TAG, "CAPTION_DOUBLE_TAP_HOOK_INSTALLED")
+        } catch (exception: ReflectiveOperationException) {
+            module.log(Log.WARN, TAG, "CAPTION_DOUBLE_TAP_TARGET_UNAVAILABLE", exception)
+        } catch (exception: LinkageError) {
+            module.log(Log.WARN, TAG, "CAPTION_DOUBLE_TAP_TARGET_LINKAGE_FAILED", exception)
         }
     }
 
@@ -259,7 +308,7 @@ internal class OutsideTapCloseHookInstaller(
                     onFailure("OUTSIDE_TAP_REGION_REFRESH_FAILED", exception)
                 }
             }
-            if (!environmentAllowed() || !settings.enabled || settings.outsideTapCloseMode == OutsideTapCloseMode.Disabled) {
+            if (!environmentAllowed() || !settings.enabled || !settings.outsideTapCloseMode.closesOnOutsideTap) {
                 synchronized(protectedTasks) { protectedTasks.clear() }
             }
         }
@@ -276,7 +325,7 @@ internal class OutsideTapCloseHookInstaller(
             val mode =
                 if (settings.enabled && environmentAllowed()) settings.outsideTapCloseMode
                 else OutsideTapCloseMode.Disabled
-            if (mode == OutsideTapCloseMode.Disabled) return clearProtection(caption, "MODE_OFF")
+            if (!mode.closesOnOutsideTap) return clearProtection(caption, "MODE_OFF")
             if (!isOrdinaryZoom(controller, task)) return clearProtection(caption, "NOT_ZOOM")
             if (hasMenuShowing.invokeUnwrapped(controller) == true) {
                 return clearProtection(caption, "MENU_SHOWING")
@@ -466,7 +515,7 @@ internal class OutsideTapCloseHookInstaller(
                     if (settings.enabled && environmentAllowed()) settings.outsideTapCloseMode
                     else OutsideTapCloseMode.Disabled
                 engine.updateMode(mode)
-                if (mode == OutsideTapCloseMode.Disabled) return@synchronized null
+                if (!mode.closesOnOutsideTap) return@synchronized null
                 when (event.actionMasked) {
                     MotionEvent.ACTION_POINTER_DOWN,
                     MotionEvent.ACTION_CANCEL,
@@ -521,6 +570,16 @@ internal class OutsideTapCloseHookInstaller(
             exitFlexibleTask.invokeUnwrapped(controller, task, true, 0, 0)
         }
 
+        /** 关闭横条所属的普通小窗；不是普通小窗（迷你、游戏悬浮窗等）时不动并返回 false。 */
+        fun closeCaptionTask(caption: Any): Boolean {
+            if (!environmentAllowed()) return false
+            val task = captionTaskField.get(caption) ?: return false
+            val controller = captionControllerField.get(caption) ?: return false
+            if (!isOrdinaryZoom(controller, task)) return false
+            exitFlexibleTask.invokeUnwrapped(controller, task, true, 0, 0)
+            return true
+        }
+
         private fun beginOutsideTap(
             engine: OutsideTapGestureEngine,
             controller: Any,
@@ -528,7 +587,7 @@ internal class OutsideTapCloseHookInstaller(
             mode: OutsideTapCloseMode,
         ): Any? {
             if (
-                mode == OutsideTapCloseMode.Disabled ||
+                !mode.closesOnOutsideTap ||
                     isCanRespondEvent.invokeUnwrapped(controller) != true ||
                     event.pointerCount != 1 ||
                     event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER ||
@@ -681,6 +740,7 @@ internal class OutsideTapCloseHookInstaller(
         const val DISPLAY_CONTENT_CLASS = "com.android.server.wm.DisplayContent"
         const val WINDOW_STATE_CLASS = "com.android.server.wm.WindowState"
         const val FLEXIBLE_CAPTION_VIEW_CLASS = "com.android.server.wm.FlexibleCaptionView"
+        const val FLEXIBLE_TASK_CAPTION_VIEW_CLASS = "com.android.server.wm.FlexibleTaskCaptionView"
         const val ORDINARY_ZOOM_STATE = 1
         const val SCALE_TOLERANCE = 0.02f
         const val FAILURE_LOG_INTERVAL_MS = 10_000L

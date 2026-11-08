@@ -48,6 +48,7 @@ internal fun ZoomOptionsScreen(
             DropdownItem(text = stringResource(R.string.outside_tap_mode_disabled)),
             DropdownItem(text = stringResource(R.string.outside_tap_mode_single)),
             DropdownItem(text = stringResource(R.string.outside_tap_mode_double)),
+            DropdownItem(text = stringResource(R.string.outside_tap_mode_caption_double)),
         )
     val followSystemLabel = stringResource(R.string.zoom_max_windows_follow_system)
     val windowCountItems =

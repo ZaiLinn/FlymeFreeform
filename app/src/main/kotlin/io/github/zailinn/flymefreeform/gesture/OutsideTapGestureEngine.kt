@@ -26,7 +26,7 @@ internal class OutsideTapGestureEngine {
         captured: Boolean,
     ) {
         activeTap = null
-        if (mode == OutsideTapCloseMode.Disabled || !captured) {
+        if (!mode.closesOnOutsideTap || !captured) {
             previousTap = null
             return
         }
@@ -82,7 +82,7 @@ internal class OutsideTapGestureEngine {
             return false
         }
         return when (mode) {
-            OutsideTapCloseMode.Disabled -> false
+            OutsideTapCloseMode.Disabled, OutsideTapCloseMode.CaptionDoubleTap -> false
             OutsideTapCloseMode.SingleTap -> {
                 previousTap = null
                 true
