@@ -97,6 +97,11 @@ config/ apps/ framework/ log/
 各圈实际条数以目录给出的 `AppCatalogSnapshot.radialArcCounts` 为准，自定义圈放不满时空位不会挤进下一圈。
 命中只按「离哪个图标圆心最近且在命中范围内」；有内侧圆弧时另设角落空白区 = 最内一圈半径 − 一个圈距
 （2/3/4 条约 128/70/52 基准 dp），不能用「图标内沿」做边界，否则两圈时第二圈只剩约 50 宽、很难选中。
+图标大小外大内小（`RadialIconScale`，只改绘制，不动圆心、圈距、命中）：应用图标按不透明本体占比放大（上限 1.25×），本体与「更多」圆盘同大；
+内侧圆弧每向内一圈乘步进——两条圆弧 0.92，三四条 0.95（用户定）；角落空白区与设置页命中预览同样按最内圈缩小后的直径。
+屏幕中央所选应用卡片（开关 `radial_center_preview` 默认关、`radial_center_label` 默认开）：`CornerRadialOverlayView.drawCenterPreview` 在扇形画布上画，
+不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长从 `DENSITY_XXXHIGH` 自适应图标重画（再走 `IconShapes`），不放大扇形那份位图，最近 4 个缓存在目录里；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
+淡入淡出 120 ms、换项从 0.94 弹回；选中「更多」不显示。开关与大小经 `begin(centerPreview, centerLabel, centerSizeDp)` 每次呼出从 `lastSettings` 传入，不依赖目录快照。
 
 **扇形目录**　`ColorOsAppCatalog` 在 system_server 的单线程执行器里工作，一次刷新分两步发布：
 ① 只为扇形条目（≤18 项）取名称、图标并塑形，立即发布；② 读全部名称、排好「更多」顺序后发布（未画好的图标用
@@ -120,6 +125,14 @@ config/ apps/ framework/ log/
 不再用定时器、数据观察者或 `applyIfStale` 追赶。分组标题行是 `LabelViewHolder`，文案来自 viewType 对应布局的固定字符串，
 原厂 `onBindViewHolder` 不处理它；`title_bind` 钩子（`AllAppRecyclerAdapter.onBindViewHolder` 返回后）
 按登记角色写入文案（`PanelGroupLabels`）。
+开关 `panel_native_list`（「「更多」显示原有列表」）打开时，`bindAdapter` 与 refill 接管都跳过，面板保持原厂「工具 + 全部应用」与原厂标题。
+此模式下另有字母索引：`refreshAlphabet` 在绑定与每次 refill 后，读 currentDataList 里「应用」标题（viewType `ALL_APP_TABLE_APP`）之后的一段，
+按名称首字母分桶求每个字母的首个位置（`PanelAlphabet`，拼音取 ICU `Han-Latin; Latin-ASCII`，`PanelPinyin` 缓存）。
+原厂「应用」段已按首字母排序（用户在设备上确认），不重排、不 notify。卡片上叠 `PanelIndexBar`（A–Z、#，铺满卡片、只收右侧 32 dp 竖条触摸），列表右内边距加 32 dp 让位；
+绑定时原厂列表常已加载完、adapter 尚未挂到 RecyclerView，之后没有重灌回调，所以 `placeIndexBar` 每 50 ms 重试找已布局的列表（最多 20 次；按 adapter 匹配，退回第一个 `androidx.recyclerview.widget.RecyclerView`），卡片建好后也补算一次；首版只在绑定当下找一次，实测索引条不出现。滑动换字母时 `SEGMENT_TICK` 并经 `LayoutManager.scrollToPositionWithOffset(pos, 0)` 跳转（方法名 16.11.3 未混淆）。搜索中隐藏。
+回桌面自动收起：侧边栏面板窗口 `ColorOsAllAppsWindow` 在 `show()` 注册、`dispose()` 注销 `ACTION_CLOSE_SYSTEM_DIALOGS` 接收器；
+内置兜底面板由协调器常驻接收器在 `morePanelActive` 时调 `CornerRadialOverlayView.dismissPanel()`。
+只认 reason `homekey`（回桌面键）与 `recentapps`（本机手势上滑回桌面发的是它），其余 reason 不收起。
 
 **面板工具小窗**　付款码、扫一扫这类工具由侧边栏自建 Intent，经 `AppPlatformUtils.n(Intent, Bundle, UserHandle)`
 交给系统 uid 代发，界面进程无法重发（目标是第三方未导出 Activity）。做法是点击前登记目标包，
@@ -214,6 +227,9 @@ config/ apps/ framework/ log/
   （`security add-generic-password -a "$USER" -s flymefreeform-release -w` 添加一次）、交互输入，经 `env:` 传给 apksigner
 - 与 Hoerire 官方版、调试签名版互不能覆盖安装；从它们切换过来需先卸载（设置会丢）
 
+**版本号**（用户 2026-11-08 定）：每次代码更新 `flymeFreeformVersionCode` +1；每构建一次 APK，`flymeFreeformVersionName` 末位 +1（1.3.7 → 1.3.8），
+构建前改好，产物名随之变化，同一版本名不出两个包。两项都在 `gradle.properties`。
+
 **构建**　一律用 `local-release.sh`（只在用户明确说「构建」之后）：
 
 ```
@@ -274,7 +290,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 `alreadyZoom` 不再二次改写，属正常，不是漏判。
 
 生效范围：system_server 改 `killall system_server`（约 30–40 秒恢复）；SystemUI 改 `kill com.android.systemui`；
-面板改 `kill com.coloros.smartsidebar`；桌面改 `killall com.android.launcher`；纯 UI 改重开模块应用。
+面板改 `pkill -f com.coloros.smartsidebar`（进程名带 `:ui`/`:edgepanel`，`killall` 匹配不到；`:ui` 按需启动）；桌面改 `killall com.android.launcher`；纯 UI 改重开模块应用。
 
 ## 八、不做的事
 
@@ -304,18 +320,20 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-08 11:30（Asia/Shanghai）
+更新时间：2026-11-08 （Asia/Shanghai，取设备时间）
 
 | 项 | 值 |
 |---|---|
-| 版本 | 1.3.7 / 2026110811 |
-| 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main`。v1.3.6（`c156254`）之后：用户在网页上改的 `e2af931` README 上游链接，`a84c926` 侧边栏工具图标兜底并排除、`56c2571` 小窗数量跟随系统、`6c7ddf0` 拖动排序触感与防闪动、`6a10515` 固定项按列表顺序、`c17626f` 图标形状，最后一个提交为版本号与文档（v1.3.7 tag 所指）。各中间提交均单独编译通过；`upstream` = Hoerire |
-| 已发布 | Release [v1.3.7](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.7)，资产 `FlymeFreeform-v1.3.7.apk`，sha256 `a83442446ac16d0f2e7b2cdc51c25cc773263345f62b18a408b9f20ceca161d3`，2138415 B，用户密钥签名；上一版 v1.3.6 资产 `bdff3a84…ba44` |
-| 设备已装 | `e38172b3`（1.3.6 版本号，含侧边栏兜底、排除注入工具、跟随系统、拖动排序；不含图标形状与固定项顺序）。10:21:57 重启过 system_server；之后用户可能已自行安装 `1dd39f08`（1.3.6 版本号，内容同 v1.3.7），未经本机核对 |
+| 版本 | 1.3.10 / 2026110820（v1.3.10 tag 所指） |
+| 本地构建 | `out/FlymeFreeform-v1.3.10.apk`，sha256 `83d94a5e3c2dc8d15ceef9e4c115a763f59cd476d3612b27828ca69e15082bf3`，2158895 B，用户密钥签名（即 v1.3.10 Release 资产），未装到设备。之前的测试包：1.3.9 `b779d219`、1.3.8 `e8e93fc1` |
+| 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main`。v1.3.7（`5ce7888`）之后：用户网页提交 `bdb6a30`（README 致谢精简），`a454470` 新设置项、`5a89d85` 「更多」原有列表 + 字母索引 + 回桌面收起、`9d1c35d` 扇形外大内小 + 屏幕中央所选应用 + 内置面板回桌面收起、`c1d0893` 添加应用快速点击闪动，最后一个提交为 1.3.10 版本号与文档（v1.3.10 tag 所指）。前三个功能提交均在临时 worktree 单独编译通过；`upstream` = Hoerire |
+| 已发布 | Release [v1.3.10](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.10)，资产 `FlymeFreeform-v1.3.10.apk`（sha256 见「本地构建」）；上一版 v1.3.7 资产 `a8344244…61d3` |
+| 设备已装 | `b779d219`（1.3.9 / 2026110818），比 1.3.10 少添加应用闪动修正与占用优化。13:09 前后重启过侧边栏与 system_server；当时设置 `pnative=false`、`center=true`、`vlog=true` |
 | 设备另有 | 旧包 `io.github.hoerire.flymefreeform` 仍在，应在 LSPosed 停用并卸载 |
-| 未在设备验证 | 「Run in background」已从挑选列表排除；跟随系统时 LuckyTool 的 200 生效、选 2 时以 2 为准；拖动触感与无闪动；图标形状第二版（方形保持系统原样、工具按应用图标模板裁切；圆形统一 86% 后裁圆）；固定项按列表顺序 |
+| 设备反馈 | 1.3.8：中央卡片有黑底板、图标发糊、字母索引条不出现，1.3.9 已改；1.3.9：添加应用快速点击闪动，1.3.10 已改。第 2 圈「其余变灰」核实为该圈已存满 5 项（两个工具 + DeepSeek、Duolingo、Firefox），按设计 |
+| 未在设备验证 | 1.3.10 相对 1.3.9 的添加应用闪动修正与三处占用优化；屏幕中央所选应用卡片（无底板、高清图标、应用名省略、横屏位置、换项弹动）；扇形图标外大内小（方形模式圆角是否被裁、选中放大是否越出屏幕）；字母索引条（日志 `PANEL_ALPHABET_SHOWN` / `PANEL_ALPHABET_NO_LIST`；右列图标能否点、跳转、震动、深色文字颜色）；回桌面收起「更多」（`ALL_APPS_CLOSE_SYSTEM_DIALOGS_<reason>` / `SYSTEM_MORE_PANEL_CLOSE_<reason>`）；跟随系统时 LuckyTool 上限生效 |
 | 待查 | 用户反映装 `e38172b3` 后增减应用扇形不更新。之后 system_server 无 `MODULE_STATE_CHANGED`，但固定项走广播 `override` 路径本就不打这条日志，10:36 前后的目录刷新可能就是广播触发，原因未定 |
-| 单元测试 | 170 项全部通过（3 项 skip） |
+| 单元测试 | 180 项全部通过（3 项 skip） |
 | 工具 | `local-release.sh`、`restart-gate.sh`（均列入 `.gitignore`，不随仓库分发） |
 | 关于页 | 只保留一个「项目地址」→ `ZaiLinn/FlymeFreeform`；上游地址与致谢在 README |
 | 签名 | 用户密钥 `release.keystore`（`CN=ZaiLinn`）；口令从环境变量 / 钥匙串 / 交互读取 |
@@ -333,6 +351,9 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 3. 待评估：滑选时显示应用名
 
 ### 本轮的坑
+
+- 添加应用页的本地顺序 `localOrders` 曾随 `canChangeSettings`（含 isUpdating）清空：每次写入时勾选先跳回旧配置再恢复（图标文字闪动），快速连点时后一次基于旧列表提交、冲掉前一次。改为只随 `settingsEditable` / `issue` 清空（已发布于 1.3.10）
+- 占用检查后的三处优化（已发布于 1.3.10）：中央卡片高清图标的留白比例改在图标线程算（原在 system_server 主线程逐像素扫，滑选时可能掉帧）；中央卡片应用名的截断与测量按「选中项 + 大小 + 画布宽 + 字体缩放」缓存，不再每帧重算；字母索引的拼音首字母在 `PanelPinyin.executor` 后台算，全部命中缓存时才在主线程直接取，结果按 `alphabetGeneration` 只采用最新一次。高清图标缓存 6 → 4 个
 
 - 扇形目录曾在每次刷新时把全部应用（本机 537 个）图标画成位图：增减固定项要等数秒、开机后首次呼出空扇形
 - 角落空白区若以「最内一圈图标内沿」为界，两圈时第二圈只剩约 50 基准 dp 宽
