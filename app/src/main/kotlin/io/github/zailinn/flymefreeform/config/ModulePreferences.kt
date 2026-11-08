@@ -54,7 +54,10 @@ internal object ModulePreferences {
     const val DEFAULT_PAUSE_IN_GAME_MODE = true
     const val DEFAULT_VERBOSE_LOG = false
     const val DEFAULT_ZOOM_MAX_WINDOW_COUNT = 1
-    const val MIN_ZOOM_MAX_WINDOW_COUNT = 1
+
+    /** 小窗数量取此值时不改写 `getMaxWinNum`，上限交给系统或其他模块（如 LuckyTool）。 */
+    const val ZOOM_MAX_WINDOW_FOLLOW_SYSTEM = 0
+    const val MIN_ZOOM_MAX_WINDOW_COUNT = ZOOM_MAX_WINDOW_FOLLOW_SYSTEM
     const val MAX_ZOOM_MAX_WINDOW_COUNT = 5
     const val DEFAULT_ZOOM_ALLOW_ANY_APP = false
     const val DEFAULT_ZOOM_LAUNCH = false

@@ -3,6 +3,7 @@ package io.github.zailinn.flymefreeform.hook.launch
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
+import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.hook.ProcessConfiguration
 
 /**
@@ -62,6 +63,9 @@ internal class FlexibleWindowLimitHook(
                         // 排除列表内的应用在前台时整体让行，保持系统原值。
                         val settings = configuration.snapshot
                         if (!settings.enabled || environment?.isForegroundExcluded() == true) {
+                            chain.proceed()
+                        } else if (isMaxWinNum && settings.zoomMaxWindowCount == ModulePreferences.ZOOM_MAX_WINDOW_FOLLOW_SYSTEM) {
+                            // 跟随系统：不覆盖，其他模块（如 LuckyTool）改的上限照常生效。
                             chain.proceed()
                         } else if (isMaxWinNum) {
                             // 直接作为上限值：这是用户在设置里明确指定的个数，不做放宽合并。

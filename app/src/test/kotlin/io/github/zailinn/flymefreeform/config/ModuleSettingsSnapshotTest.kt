@@ -132,6 +132,27 @@ class ModuleSettingsSnapshotTest {
     }
 
     @Test
+    fun zoomWindowCountFollowSystemRoundTripsAndOutOfRangeIsClamped() {
+        val preferences = InMemoryPreferences()
+        ModuleSettingsSnapshot(zoomMaxWindowCount = ModulePreferences.ZOOM_MAX_WINDOW_FOLLOW_SYSTEM)
+            .writeTo(preferences.edit()).commit()
+        assertEquals(
+            ModulePreferences.ZOOM_MAX_WINDOW_FOLLOW_SYSTEM,
+            ModuleSettingsSnapshot.readFrom(preferences).zoomMaxWindowCount,
+        )
+        preferences.edit().putInt(ModulePreferences.KEY_ZOOM_MAX_WINDOW_COUNT, -3).commit()
+        assertEquals(
+            ModulePreferences.ZOOM_MAX_WINDOW_FOLLOW_SYSTEM,
+            ModuleSettingsSnapshot.readFrom(preferences).zoomMaxWindowCount,
+        )
+        preferences.edit().putInt(ModulePreferences.KEY_ZOOM_MAX_WINDOW_COUNT, 200).commit()
+        assertEquals(
+            ModulePreferences.MAX_ZOOM_MAX_WINDOW_COUNT,
+            ModuleSettingsSnapshot.readFrom(preferences).zoomMaxWindowCount,
+        )
+    }
+
+    @Test
     fun innerArcBroadcastEncodingRoundTrips() {
         val targets = listOf(
             listOf(PinnedTarget.App("com.a", "com.a.Main")),

@@ -74,7 +74,8 @@
     <string name="zoom_limit_removed_title">小窗交互</string>
     <string name="zoom_options_summary">小窗数量、启动场景与窗口操作</string>
     <string name="zoom_max_windows_title">小窗数量</string>
-    <string name="zoom_max_windows_summary">同时存在的自由浮窗个数</string>
+    <string name="zoom_max_windows_summary">同时存在的自由浮窗个数；跟随系统时不改写，由系统或其他模块决定</string>
+    <string name="zoom_max_windows_follow_system">跟随系统</string>
     <string name="zoom_allow_any_app_title">解除限制</string>
     <string name="zoom_allow_any_app_summary">原本不支持自由浮窗的应用也能以小窗打开</string>
     <string name="zoom_launch_title">小窗跳转</string>

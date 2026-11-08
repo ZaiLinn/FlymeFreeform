@@ -49,6 +49,13 @@ internal fun ZoomOptionsScreen(
             DropdownItem(text = stringResource(R.string.outside_tap_mode_single)),
             DropdownItem(text = stringResource(R.string.outside_tap_mode_double)),
         )
+    val followSystemLabel = stringResource(R.string.zoom_max_windows_follow_system)
+    val windowCountItems =
+        (ModulePreferences.MIN_ZOOM_MAX_WINDOW_COUNT..ModulePreferences.MAX_ZOOM_MAX_WINDOW_COUNT).map { count ->
+            DropdownItem(
+                text = if (count == ModulePreferences.ZOOM_MAX_WINDOW_FOLLOW_SYSTEM) followSystemLabel else count.toString(),
+            )
+        }
     SettingsPage(
         title = stringResource(R.string.zoom_limit_removed_title),
         onBack = onBack,
@@ -66,19 +73,17 @@ internal fun ZoomOptionsScreen(
                         outsideTapModes.getOrNull(index)?.let(onOutsideTapCloseModeChange)
                     },
                 )
-                RemoteDpSliderPreference(
-                    icon = Icons.Rounded.Widgets,
-                    confirmedValue = state.settings.zoomMaxWindowCount,
-                    isUpdating = state.isUpdating,
-                    enabled = enabled,
+                // 下标即取值：0 = 跟随系统，1–5 = 指定个数。
+                OverlaySpinnerPreference(
+                    items = windowCountItems,
+                    selectedIndex = ModulePreferences.coerceZoomMaxWindowCount(state.settings.zoomMaxWindowCount),
                     title = stringResource(R.string.zoom_max_windows_title),
                     summary = stringResource(R.string.zoom_max_windows_summary),
-                    minDp = ModulePreferences.MIN_ZOOM_MAX_WINDOW_COUNT,
-                    maxDp = ModulePreferences.MAX_ZOOM_MAX_WINDOW_COUNT,
-                    coerceDp = ModulePreferences::coerceZoomMaxWindowCount,
-                    onPreviewChange = {},
-                    onCommit = onZoomMaxWindowCountChange,
-                    showDpUnit = false,
+                    enabled = enabled && !state.isUpdating,
+                    startAction = { PreferenceIcon(Icons.Rounded.Widgets, enabled) },
+                    onSelectedIndexChange = { index ->
+                        onZoomMaxWindowCountChange(ModulePreferences.coerceZoomMaxWindowCount(index))
+                    },
                 )
                 SwitchPreference(
                     checked = state.settings.zoomAllowAnyApp,
