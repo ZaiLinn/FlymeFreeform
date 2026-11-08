@@ -76,6 +76,10 @@
     <string name="zoom_max_windows_title">小窗数量</string>
     <string name="zoom_max_windows_summary">同时存在的自由浮窗个数；跟随系统时不改写，由系统或其他模块决定</string>
     <string name="zoom_max_windows_follow_system">跟随系统</string>
+    <string name="icon_shape_title">图标形状</string>
+    <string name="icon_shape_summary">扇形、「更多」面板与本应用列表里的图标统一为同一外形</string>
+    <string name="icon_shape_circle">圆形</string>
+    <string name="icon_shape_square">方形</string>
     <string name="zoom_allow_any_app_title">解除限制</string>
     <string name="zoom_allow_any_app_summary">原本不支持自由浮窗的应用也能以小窗打开</string>
     <string name="zoom_launch_title">小窗跳转</string>

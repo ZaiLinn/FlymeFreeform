@@ -23,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.zailinn.flymefreeform.R
@@ -274,7 +273,7 @@ private fun BackButton(onBack: () -> Unit) {
 private fun EntryIcon(entry: SelectableEntry?) {
     if (entry == null) return
     Image(
-        bitmap = entry.icon.asImageBitmap(),
+        bitmap = rememberShapedIcon(entry.icon, isApp = true),
         contentDescription = null,
         modifier = Modifier.padding(end = 6.dp).size(32.dp),
     )

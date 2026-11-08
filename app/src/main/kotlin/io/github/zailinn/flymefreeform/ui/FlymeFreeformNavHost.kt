@@ -2,6 +2,7 @@ package io.github.zailinn.flymefreeform.ui
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
@@ -61,6 +62,7 @@ internal fun FlymeFreeformNavHost(
     onRadialMultiArcEnabledChange: (Boolean) -> Unit,
     onRadialArcCountChange: (Int) -> Unit,
     onRadialFillSourceChange: (Int) -> Unit,
+    onIconShapeChange: (Int) -> Unit,
     onRequestScopes: () -> Unit,
     onPinnedTargetsChange: (List<PinnedTarget>) -> Unit,
     onInnerArcTargetsChange: (Int, List<PinnedTarget>) -> Unit,
@@ -119,6 +121,11 @@ internal fun FlymeFreeformNavHost(
         }
     }
 
+    val squareIconMask = remember(apps) { squareIconMaskOf(apps) }
+    CompositionLocalProvider(
+        LocalIconShape provides state.settings.iconShape,
+        LocalSquareIconMask provides squareIconMask,
+    ) {
     NavDisplay(
         backStack = backStack,
         modifier = Modifier.fillMaxSize(),
@@ -156,6 +163,7 @@ internal fun FlymeFreeformNavHost(
                 onRadialMultiArcEnabledChange = onRadialMultiArcEnabledChange,
                 onRadialArcCountChange = onRadialArcCountChange,
                 onRadialFillSourceChange = onRadialFillSourceChange,
+                onIconShapeChange = onIconShapeChange,
                 onRadialKeepOpenChange = onRadialKeepOpenChange,
                 onNavigateToPinnedApps = navigateToPinnedApps,
             )
@@ -210,5 +218,6 @@ internal fun FlymeFreeformNavHost(
                 onMoveTargetToArc = onMoveTargetToArc,
             )
         }
+    }
     }
 }

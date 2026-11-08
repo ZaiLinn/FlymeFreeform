@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
                     onRadialMultiArcEnabledChange = repository::setRadialMultiArcEnabled,
                     onRadialArcCountChange = repository::setRadialArcCount,
                     onRadialFillSourceChange = repository::setRadialFillSource,
+                    onIconShapeChange = repository::setIconShape,
                     onRequestScopes = repository::requestMissingScopes,
                     onPinnedTargetsChange = repository::setPinnedTargets,
                     onInnerArcTargetsChange = repository::setInnerArcTargets,

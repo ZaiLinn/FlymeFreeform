@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.CenterFocusStrong
 import androidx.compose.material.icons.rounded.DonutLarge
 import androidx.compose.material.icons.rounded.History
@@ -74,6 +75,7 @@ internal fun RadialSettingsScreen(
     onRadialMultiArcEnabledChange: (Boolean) -> Unit,
     onRadialArcCountChange: (Int) -> Unit,
     onRadialFillSourceChange: (Int) -> Unit,
+    onIconShapeChange: (Int) -> Unit,
     onRadialKeepOpenChange: (Boolean) -> Unit,
     onNavigateToPinnedApps: () -> Unit,
 ) {
@@ -114,6 +116,13 @@ internal fun RadialSettingsScreen(
             DropdownItem(text = stringResource(R.string.radial_fill_none)),
         )
     val fillSource = ModulePreferences.coerceRadialFillSource(state.settings.radialFillSource)
+    // 下标即取值：0 = 圆形，1 = 方形。
+    val shapeItems =
+        listOf(
+            DropdownItem(text = stringResource(R.string.icon_shape_circle)),
+            DropdownItem(text = stringResource(R.string.icon_shape_square)),
+        )
+    val iconShape = ModulePreferences.coerceIconShape(state.settings.iconShape)
     SettingsPage(
         title = stringResource(R.string.radial_settings_title),
         onBack = onBack,
@@ -166,6 +175,17 @@ internal fun RadialSettingsScreen(
                     startAction = { PreferenceIcon(Icons.Rounded.History, enabled) },
                     onSelectedIndexChange = { index ->
                         if (index != fillSource) onRadialFillSourceChange(index)
+                    },
+                )
+                OverlaySpinnerPreference(
+                    items = shapeItems,
+                    selectedIndex = iconShape,
+                    title = stringResource(R.string.icon_shape_title),
+                    summary = stringResource(R.string.icon_shape_summary),
+                    enabled = enabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.Category, enabled) },
+                    onSelectedIndexChange = { index ->
+                        if (index != iconShape) onIconShapeChange(index)
                     },
                 )
                 RemoteDpSliderPreference(

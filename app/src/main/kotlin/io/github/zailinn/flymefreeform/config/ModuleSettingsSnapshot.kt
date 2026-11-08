@@ -39,6 +39,8 @@ internal data class ModuleSettingsSnapshot(
     val radialArcCount: Int = ModulePreferences.DEFAULT_RADIAL_ARC_COUNT,
     /** 扇形空位的补位来源，取值见 ModulePreferences.RADIAL_FILL_*。 */
     val radialFillSource: Int = ModulePreferences.DEFAULT_RADIAL_FILL_SOURCE,
+    /** 图标外形，取值见 ModulePreferences.ICON_SHAPE_*。 */
+    val iconShape: Int = ModulePreferences.DEFAULT_ICON_SHAPE,
     /**
      * 第 2～4 条圆弧各自的固定项（下标 0 对应第 2 条）。空列表表示该圈用最近使用的应用补满。
      * 与圆弧条数无关，始终保存三份。
@@ -90,6 +92,10 @@ internal data class ModuleSettingsSnapshot(
             .putInt(
                 ModulePreferences.KEY_RADIAL_FILL_SOURCE,
                 ModulePreferences.coerceRadialFillSource(radialFillSource),
+            )
+            .putInt(
+                ModulePreferences.KEY_ICON_SHAPE,
+                ModulePreferences.coerceIconShape(iconShape),
             )
             .putString(
                 ModulePreferences.KEY_BLACKLIST_PACKAGES,
@@ -270,6 +276,13 @@ internal data class ModuleSettingsSnapshot(
                         preferences.getInt(
                             ModulePreferences.KEY_RADIAL_FILL_SOURCE,
                             ModulePreferences.DEFAULT_RADIAL_FILL_SOURCE,
+                        ),
+                    ),
+                iconShape =
+                    ModulePreferences.coerceIconShape(
+                        preferences.getInt(
+                            ModulePreferences.KEY_ICON_SHAPE,
+                            ModulePreferences.DEFAULT_ICON_SHAPE,
                         ),
                     ),
                 innerArcTargets =

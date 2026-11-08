@@ -18,6 +18,7 @@ import android.util.Log
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toDrawable
 import io.github.zailinn.flymefreeform.apps.AppSelectionPolicy
+import io.github.zailinn.flymefreeform.apps.IconShapes
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
 import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.config.ModuleSettingsSnapshot
@@ -68,7 +69,8 @@ internal data class AppCatalogSnapshot(
             this.settings.radialMaxItems == settings.radialMaxItems &&
             this.settings.effectiveRadialArcCount == settings.effectiveRadialArcCount &&
             this.settings.innerArcTargets == settings.innerArcTargets &&
-            this.settings.radialFillSource == settings.radialFillSource
+            this.settings.radialFillSource == settings.radialFillSource &&
+            this.settings.iconShape == settings.iconShape
 }
 
 /** 「更多」面板按需取图标：回调在图标线程执行；返回的函数用于取消尚未开始的请求。 */
@@ -121,6 +123,10 @@ internal class ColorOsAppCatalog(
     private var lastPanel: List<RadialEntry> = emptyList()
     private var frequentCache: Pair<Long, List<String>>? = null
 
+    /** 各图标缓存对应的外形；设置改变时清空。目录线程写，面板图标线程读。 */
+    @Volatile private var iconShape = ModulePreferences.DEFAULT_ICON_SHAPE
+    private var squareMask: Bitmap? = null
+
     @Volatile private var sidebarEntries: List<SelectableEntry> = emptyList()
     @Volatile private var foregroundPackage: String? = null
 
@@ -154,7 +160,15 @@ internal class ColorOsAppCatalog(
     private fun load(settings: ModuleSettingsSnapshot, generation: Long) {
         val startedAt = SystemClock.uptimeMillis()
         dropInvalidatedPackages()
+        val shape = ModulePreferences.coerceIconShape(settings.iconShape)
+        if (shape != iconShape) {
+            iconShape = shape
+            shapedCache.clear()
+            nativeShapedCache.clear()
+            iconCache.clear()
+        }
         val index = currentIndex() ?: return
+        if (IconShapes.isSquare(shape)) ensureSquareMask(index)
         val natives = nativeEntries()
         fun exists(target: PinnedTarget) = target in index.activities || target in natives
         val recents = recentComponents().map { it.toTarget() }.filter(::exists).distinct()
@@ -346,12 +360,14 @@ internal class ColorOsAppCatalog(
 
     private fun rawIcon(target: PinnedTarget, info: LauncherActivityInfo): Bitmap? =
         iconCache[target] ?: try {
-            info.getIcon(context.resources.displayMetrics.densityDpi).toBitmap().also { iconCache[target] = it }
+            // 「更多」面板直接用这份图标，也按「图标形状」统一本体大小与外形。
+            IconShapes.apply(info.getIcon(context.resources.displayMetrics.densityDpi).toBitmap(), iconShape, isApp = true, squareMask = null)
+                .also { iconCache[target] = it }
         } catch (_: RuntimeException) {
             null
         }
 
-    /** 「更多」面板与扇形塑形前共用的条目：系统原始图标。 */
+    /** 「更多」面板与扇形塑形前共用的条目：按图标形状统一过的系统图标。 */
     private fun plainEntry(
         target: PinnedTarget,
         index: AppIndex,
@@ -390,24 +406,45 @@ internal class ColorOsAppCatalog(
             } catch (_: RuntimeException) {
                 return plain
             }
-        val shaped = shapeDrawable(source) ?: return plain
+        // 分身是应用图标；工具、快捷方式在方形模式下按应用图标模板裁成同样外形和大小。
+        val isApp = (target as? PinnedTarget.Sidebar)?.kind == PinnedTarget.Kind.CloneApp
+        val shaped = shapeDrawable(source, isApp) ?: return plain
         nativeShapedCache[target] = plain.icon to shaped
         return plain.copy(icon = shaped)
     }
 
     private fun shape(info: LauncherActivityInfo): Bitmap? =
         try {
-            shapeDrawable(info.getIcon(context.resources.displayMetrics.densityDpi))
+            shapeDrawable(info.getIcon(context.resources.displayMetrics.densityDpi), isApp = true)
         } catch (_: RuntimeException) {
             null
         }
 
-    private fun shapeDrawable(source: Drawable): Bitmap? =
+    /** 先由系统重绘自适应图标，再按「图标形状」统一（见 [IconShapes]）。 */
+    private fun shapeDrawable(source: Drawable, isApp: Boolean): Bitmap? =
         try {
-            iconRenderer.shapedIcon(source).toBitmap()
+            IconShapes.apply(iconRenderer.shapedIcon(source).toBitmap(), iconShape, isApp, squareMask)
         } catch (_: RuntimeException) {
             null
         }
+
+    /** 方形模式的外形模板：取前几个应用里第一个合格的系统图标，之后一直复用。 */
+    private fun ensureSquareMask(index: AppIndex) {
+        if (squareMask != null) return
+        for (target in index.order.take(SQUARE_MASK_CANDIDATES)) {
+            val info = index.activities[target] ?: continue
+            val icon =
+                try {
+                    iconRenderer.shapedIcon(info.getIcon(context.resources.displayMetrics.densityDpi)).toBitmap()
+                } catch (_: RuntimeException) {
+                    continue
+                }
+            IconShapes.maskFrom(icon)?.let {
+                squareMask = it
+                return
+            }
+        }
+    }
 
     private class AppIndex(
         val revision: Long,
@@ -506,6 +543,7 @@ internal class ColorOsAppCatalog(
     }
 
     private companion object {
+        const val SQUARE_MASK_CANDIDATES = 30
         const val RECENT_LIMIT = 48
         const val FREQUENT_WINDOW_MS = 7L * 24 * 60 * 60 * 1000
         const val FREQUENT_CACHE_MS = 10L * 60 * 1000

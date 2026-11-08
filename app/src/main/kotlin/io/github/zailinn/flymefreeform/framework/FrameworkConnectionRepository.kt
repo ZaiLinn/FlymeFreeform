@@ -111,6 +111,11 @@ internal class FrameworkConnectionRepository(private val context: Context) {
             it.copy(radialFillSource = ModulePreferences.coerceRadialFillSource(source))
         }
 
+    fun setIconShape(shape: Int) =
+        updateSettings {
+            it.copy(iconShape = ModulePreferences.coerceIconShape(shape))
+        }
+
     fun setZoomMaxWindowCount(count: Int) =
         updateSettings {
             it.copy(

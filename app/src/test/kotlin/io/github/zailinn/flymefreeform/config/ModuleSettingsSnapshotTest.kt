@@ -132,6 +132,16 @@ class ModuleSettingsSnapshotTest {
     }
 
     @Test
+    fun iconShapeRoundTripsAndRejectsUnknownValues() {
+        val preferences = InMemoryPreferences()
+        assertEquals(ModulePreferences.ICON_SHAPE_CIRCLE, ModuleSettingsSnapshot.readFrom(preferences).iconShape)
+        ModuleSettingsSnapshot(iconShape = ModulePreferences.ICON_SHAPE_SQUARE).writeTo(preferences.edit()).commit()
+        assertEquals(ModulePreferences.ICON_SHAPE_SQUARE, ModuleSettingsSnapshot.readFrom(preferences).iconShape)
+        preferences.edit().putInt(ModulePreferences.KEY_ICON_SHAPE, 7).commit()
+        assertEquals(ModulePreferences.DEFAULT_ICON_SHAPE, ModuleSettingsSnapshot.readFrom(preferences).iconShape)
+    }
+
+    @Test
     fun zoomWindowCountFollowSystemRoundTripsAndOutOfRangeIsClamped() {
         val preferences = InMemoryPreferences()
         ModuleSettingsSnapshot(zoomMaxWindowCount = ModulePreferences.ZOOM_MAX_WINDOW_FOLLOW_SYSTEM)

@@ -2,6 +2,8 @@ package io.github.zailinn.flymefreeform.ui
 
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -67,6 +69,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import io.github.zailinn.flymefreeform.apps.IconShapes
 import io.github.zailinn.flymefreeform.R
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
 import io.github.zailinn.flymefreeform.apps.SidebarCatalogState
@@ -695,7 +698,13 @@ private fun AddedAppRow(
                     modifier =
                         Modifier
                             .size(44.dp)
-                            .squircleBackground(MiuixTheme.colorScheme.secondaryContainer, 12.dp),
+                            .then(
+                                if (IconShapes.isSquare(LocalIconShape.current)) {
+                                    Modifier.squircleBackground(MiuixTheme.colorScheme.secondaryContainer, 12.dp)
+                                } else {
+                                    Modifier.background(MiuixTheme.colorScheme.secondaryContainer, CircleShape)
+                                },
+                            ),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -735,9 +744,13 @@ private fun AddedAppRow(
 private fun AppIcon(app: SelectableEntry) {
     Box(modifier = Modifier.size(44.dp)) {
         Image(
-            bitmap = app.icon.asImageBitmap(),
+            bitmap = rememberShapedIcon(app.icon, app.isAppIcon),
             contentDescription = null,
-            modifier = Modifier.matchParentSize().squircleClip(12.dp),
+            // 方形保持原有的列表裁切；圆形已在图标里裁好。
+            modifier =
+                Modifier.matchParentSize().then(
+                    if (IconShapes.isSquare(LocalIconShape.current)) Modifier.squircleClip(12.dp) else Modifier,
+                ),
         )
         app.badge?.let { badge ->
             Image(

@@ -44,6 +44,7 @@ internal object ModulePreferences {
     const val KEY_RADIAL_MULTI_ARC_ENABLED = "radial_multi_arc_enabled"
     const val KEY_RADIAL_ARC_COUNT = "radial_arc_count"
     const val KEY_RADIAL_FILL_SOURCE = "radial_fill_source"
+    const val KEY_ICON_SHAPE = "icon_shape"
     const val DEFAULT_ENABLED = false
     const val DEFAULT_CORNER_ENABLED = true
     const val DEFAULT_CORNER_TRIGGER_RANGE_DP = 84
@@ -81,6 +82,11 @@ internal object ModulePreferences {
     const val RADIAL_FILL_FREQUENT = 1
     const val RADIAL_FILL_NONE = 2
     const val DEFAULT_RADIAL_FILL_SOURCE = RADIAL_FILL_RECENT
+
+    /** 扇形与模块应用列表的图标外形：统一为圆形或圆角方形。 */
+    const val ICON_SHAPE_CIRCLE = 0
+    const val ICON_SHAPE_SQUARE = 1
+    const val DEFAULT_ICON_SHAPE = ICON_SHAPE_CIRCLE
     const val MIN_CORNER_TRIGGER_RANGE_DP = 24
     const val MAX_CORNER_TRIGGER_RANGE_DP = 160
     const val MIN_RADIAL_HIT_RANGE_DP = 40
@@ -103,6 +109,9 @@ internal object ModulePreferences {
 
     fun coerceRadialFillSource(value: Int): Int =
         if (value in RADIAL_FILL_RECENT..RADIAL_FILL_NONE) value else DEFAULT_RADIAL_FILL_SOURCE
+
+    fun coerceIconShape(value: Int): Int =
+        if (value in ICON_SHAPE_CIRCLE..ICON_SHAPE_SQUARE) value else DEFAULT_ICON_SHAPE
 
     /** 黑名单包名：换行分隔，逐条校验，最多 200 条。 */
     fun decodePackages(raw: String?): List<String> =
