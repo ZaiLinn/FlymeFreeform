@@ -95,7 +95,7 @@ config/ apps/ framework/ log/
 **框架服务恢复**　FrameworkConnectionRepository 在后台串行队列中按服务 Binder 身份去重，优先最新绑定；监听 linkToDeath，并在 reconcile 与写入前剔除死亡服务、清理活动连接与缓存、激活剩余候选。Service 102 未公开 Binder，反射 mService 字段由 keep 规则保护；不可反射时只读 apiVersion，只有 DeadObjectException 视为死亡，其他错误保留原诊断；多个不同有效 Binder 仍禁止写入。
 
 
-**starter 锁安全**　副作用经 StarterSideEffects 离开 starter 线程；面板即时收起改为主线程队首，延迟收起仍为 60 ms。StarterLockProbe 从 mService.mGlobalLock 读取弱引用，执行时以 Thread.holdsLock 检测；未知只报一次，违规同名每 10 秒最多一次，不抛异常。同步 zoom 启动与窗口状态查询为既有厂商白名单。PM 与厂商控制中心来源查询改为异步缓存（含包变化失效），冷缓存按未知放行；锁屏只读 ModuleEnvironmentState 的广播缓存，不在钩子里刷新厂商 Keyguard 实现。
+**starter 锁安全**　副作用经 StarterSideEffects 离开 starter 线程；面板即时收起改为主线程队首，延迟收起仍为 60 ms。StarterLockProbe 从 mService.mGlobalLock 读取弱引用，执行时以 Thread.holdsLock 检测；未知只报一次，违规同名每 10 秒最多一次，不抛异常。同步 zoom 启动与窗口状态查询为既有厂商白名单。PM 查询改为专用工作线程缓存（含包变化失效），冷缓存按未知放行；控制中心来源在当前 execute / resolveActivity 阶段以探针确认未持 WM 锁后读取，仅在本次启动内传递，持锁且没有本次观察时保守放行；锁屏只读 ModuleEnvironmentState 的广播缓存，不在钩子里刷新厂商 Keyguard 实现。
 
 
 **扇形菜单**　system_server 内的协调器监听底角指针，手势逻辑在 `CornerGestureEngine`（纯状态机，可单测），
@@ -351,6 +351,8 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 8. 工程纪律：构建输出落 `out/`、临时文件落 `tmp/`、`release.keystore` 必须保留、交付前 `tar -czf` 打包放存储根目录
 
 ## 十、当前状态
+
+第二组源码 versionCode 2026110836：所有改写先核对排除和锁屏；用户来自 Request；当前启动控制中心来源仅在探针确认未持 WM 锁时读取，嵌套阶段共享本次观察；PM 查询移到专用工作线程。延迟重开复制 Request 身份与 grants，执行前复核，失败回退原参数启动；反射预检失败则不关窗、不接管。
 
 审计修复进行中：方案见 `docs/plan-audit-fixes.md`。源码 versionCode 2026110835，第一组修复连接死亡、身份校验、准备任务取消释放、绑定上下文和用户切换。仅编译与单测，不操作设备。
 

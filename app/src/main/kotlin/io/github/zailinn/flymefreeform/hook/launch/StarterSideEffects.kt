@@ -16,6 +16,16 @@ internal class StarterSideEffects(
     private val handler: Handler = Handler(Looper.getMainLooper()),
     private val log: (String, Throwable?) -> Unit,
 ) {
+    private val worker = java.util.concurrent.ThreadPoolExecutor(1, 1, 10,
+        java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.ArrayBlockingQueue(512),
+        { task -> Thread(task, "FlymeFreeform-StarterQueries") },
+        java.util.concurrent.ThreadPoolExecutor.AbortPolicy()).apply { allowCoreThreadTimeOut(true) }
+
+    fun background(name: String, block: () -> Unit) {
+        try { worker.execute { execute(name, block) } }
+        catch (error: java.util.concurrent.RejectedExecutionException) { throw error }
+    }
+
     fun post(name: String, block: () -> Unit) { handler.post { execute(name, block) } }
     fun postDelayed(name: String, delayMs: Long, block: () -> Unit) {
         handler.postDelayed({ execute(name, block) }, delayMs)
@@ -26,19 +36,22 @@ internal class StarterSideEffects(
 
     private fun execute(name: String, block: () -> Unit) {
         lockProbe.assertOffStarter(name)
-        try { block() } catch (error: RuntimeException) { log("STARTER_EFFECT_FAILED_" + name, error) }
+        try { block() } catch (error: Exception) { log("STARTER_EFFECT_FAILED_" + name, error) }
     }
 
     fun canCloseZoomTask(): Boolean = ZoomTaskCloser.closer != null
 
-    fun reopenInZoom(intent: Intent, target: String, delayMs: Long, start: (Intent) -> Boolean) {
-        val closer = ZoomTaskCloser.closer ?: return
+    fun reopenInZoom(target: String, delayMs: Long, valid: () -> Boolean,
+        start: (Boolean) -> Boolean, current: () -> Boolean, complete: (Boolean, Boolean) -> Unit) {
         post("reopen_close") {
-            val closed = runCatching { closer(target) }.getOrDefault(false)
-            postDelayed("reopen_start", if (closed) delayMs else 0L) {
-                val started = start(intent)
-                ModuleLog.debug(TAG) { "ZOOM_REOPENED_closed" + closed + "_started" + started + "_" + target }
-            }
+            io.github.zailinn.flymefreeform.hook.launch.decision.DeferredLaunch.run(
+                delayMs, valid, { ZoomTaskCloser.closer?.invoke(target) == true },
+                { delay, action -> postDelayed("reopen_start", delay, action) }, start,
+                { closed, zoomStarted, started ->
+                    complete(started, zoomStarted)
+                    ModuleLog.debug(TAG) { "ZOOM_REOPENED_closed" + closed + "_started" + started + "_" + target }
+                    if (!started) log("ZOOM_REOPEN_FAILED_" + target, null)
+                }, current)
         }
     }
 

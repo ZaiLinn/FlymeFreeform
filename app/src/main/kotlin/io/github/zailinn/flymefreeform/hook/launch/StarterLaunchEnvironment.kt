@@ -17,9 +17,9 @@ internal class StarterLaunchEnvironment(
     override val launcherUid get() = queries.uid(LaunchRules.LAUNCHER_PACKAGE)
     /** 不在 WM 锁内刷新厂商 Keyguard 实现，只读环境在主线程广播中维护的缓存。 */
     override fun deviceUnlocked(refresh: Boolean) = environment?.isDeviceUnlocked(false) != false
-    override fun isExcluded(pkg: String) = environment?.isExcluded(pkg) == true
+    override fun isExcluded(pkg: String) = configuration.snapshot.isBlacklisted(pkg) || environment?.isExcluded(pkg) == true
     override fun isThirdParty(pkg: String) = queries.isThirdParty(pkg)
-    override fun fromControlCenter(pkg: String) = queries.fromControlCenter(pkg)
+    override fun fromControlCenter(pkg: String) = false
     override fun resolveImplicitTarget(): String? = null
     override fun dispatchOwner(callingPackage: String?, realCallingUid: Int, requestRealUid: Int): String? {
         if (callingPackage == null || callingPackage !in LaunchRules.PENDING_DISPATCH_PACKAGES) return null

@@ -28,6 +28,10 @@ internal object LaunchDecider {
         val fromSystemUi = systemUiUid > 0 &&
             (s.callingUid == systemUiUid || s.realCallingUid == systemUiUid || s.requestRealCallingUid == systemUiUid)
         val target = s.preemptTarget ?: return pass()
+        if (env.isExcluded(target)) {
+            events += LaunchEvent.Log("ZOOM_SKIPPED_EXCLUDED_" + target)
+            return pass()
+        }
         val waitsForResult = s.hasResultTo && s.requestCode >= 0
         if (waitsForResult) return pass()
         val selfRelaunch = s.hasData && isSelfRelaunch(env, memory, callingPackage, target, s, now)
@@ -66,14 +70,18 @@ internal object LaunchDecider {
     }
 
     fun decideInject(s: LaunchSnapshot, env: LaunchEnvironment, memory: LaunchMemory, now: Long): LaunchDecision {
-        if (!env.enabled || s.zoomAppliedExtra) return LaunchDecision.PassThrough()
+        if (!env.enabled || !env.zoomLaunch || s.zoomAppliedExtra || !env.deviceUnlocked(false))
+            return LaunchDecision.PassThrough()
+        val target = s.preemptTarget ?: env.resolveImplicitTarget() ?: return LaunchDecision.PassThrough()
+        if (env.isExcluded(target)) return LaunchDecision.PassThrough(events = listOf(
+            LaunchEvent.Log("ZOOM_SKIPPED_EXCLUDED_" + target)))
         val events = mutableListOf<LaunchEvent>()
         val systemUiUid = env.systemUiUid
         val selfTarget = s.componentPackage ?: s.explicitPackage ?: s.preemptTarget
         val selfInject = !s.hasData && selfTarget != null &&
             isSelfRelaunch(env, memory, s.callingPackage, selfTarget, s, now)
         val reason = if (selfInject) "self_relaunch" else
-            reasonFor(s, env, memory, now, systemUiUid, events)
+            reasonFor(s, env, memory, now, systemUiUid, target, events)
                 ?: return LaunchDecision.PassThrough(events = events.toList())
         val destination = s.componentPackage ?: s.explicitPackage
         val record = if (reason == "inter_app" && s.callingPackage != null && destination != null)
@@ -108,7 +116,7 @@ internal object LaunchDecider {
     }
 
     private fun reasonFor(s: LaunchSnapshot, env: LaunchEnvironment, memory: LaunchMemory, now: Long,
-        systemUiUid: Int, events: MutableList<LaunchEvent>): String? {
+        systemUiUid: Int, target: String, events: MutableList<LaunchEvent>): String? {
         val callingUid = s.callingUid
         val realCallingUid = s.realCallingUid
         val requestRealUid = s.requestRealCallingUid
@@ -117,10 +125,12 @@ internal object LaunchDecider {
         // 「小窗跳转」是唯一的启动改写开关：关闭时任何入口都不改写，
         // 全部启动回到系统默认的全屏行为。
         if (!env.zoomLaunch) return null
-        if (s.zoomSourceExtra == 1) {
+        val trustedSource = systemUiUid > 0 &&
+            (callingUid == systemUiUid || realCallingUid == systemUiUid || requestRealUid == systemUiUid)
+        if (trustedSource && s.zoomSourceExtra == 1) {
             return "notification"
         }
-        if (s.quickSettingsExtra) return "control_center"
+        if (trustedSource && s.quickSettingsExtra) return "control_center"
         // 系统全局搜索（桌面下滑呼出的搜索页）始终全屏。
         // 必须在桌面「卡片」判定之前：桌面以 startActivityForResult 拉起搜索页
         // （cp=桌面、rt=1、action 非 MAIN），正好命中卡片分支，会被开成小窗。
@@ -136,17 +146,6 @@ internal object LaunchDecider {
         // 处原样放行，未改写的才补写参数。
         val systemUiPending = s.hasPendingIntent && callingPackage == SYSTEM_UI_PACKAGE
         // 大量跳转以 action 隐式启动，没有显式组件；解析出目标包后才能参与判定。
-        val target =
-            s.componentPackage
-                ?: s.explicitPackage
-                ?: env.resolveImplicitTarget()
-                ?: return null
-        // 排除列表内的应用不参与任何启动改写。
-        if (env.isExcluded(target)) {
-            events += LaunchEvent.Log("ZOOM_SKIPPED_EXCLUDED_" + target)
-            return null
-        }
-
         // 目标应用完成操作后重新唤起发起方，特征与主动跳转相同（跨包、携带 resultTo），
         // 但这次启动用于回到原应用，不参与浮窗化。关闭浮窗交由系统的返回入口处理。
         if (returning(memory, callingPackage, target, now, events)) {

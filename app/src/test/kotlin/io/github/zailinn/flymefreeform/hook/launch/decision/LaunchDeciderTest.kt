@@ -174,8 +174,8 @@ class LaunchDeciderTest {
         val e = Environment(); val m = LaunchMemory()
         val base = link().copy(hasResultTo = false, callingPackage = "system.source")
         val cases = listOf(
-            base.copy(zoomSourceExtra = 1) to "notification",
-            base.copy(quickSettingsExtra = true) to "control_center",
+            base.copy(zoomSourceExtra = 1, realCallingUid = e.systemUiUid) to "notification",
+            base.copy(quickSettingsExtra = true, realCallingUid = e.systemUiUid) to "control_center",
             base.copy(callingPackage = systemUi, hasPendingIntent = true) to "notification",
             base.copy(callingPackage = launcher, hasResultTo = true) to "launcher_card",
             base.copy(callingPackage = launcher, componentPackage = "com.android.settings") to "launcher_settings",
@@ -211,8 +211,31 @@ class LaunchDeciderTest {
         assertEquals("inter_app", reason(inject(link().copy(componentPackage = null), e, m, 1000)))
         assertEquals(1, e.resolveCalls)
     }
-    @Test fun sourceMarkersKeepTheirPriorityOverPickerAndBlacklist() {
+    @Test fun sourceMarkersCannotBypassBlacklist() {
         val e = Environment().apply { excluded += x }; val m = LaunchMemory()
-        assertEquals("notification", reason(inject(link().copy(zoomSourceExtra = 1, action = LaunchRules.PICKER_ACTIONS.first()), e, m, 1000)))
+        assertNull(reason(inject(link().copy(zoomSourceExtra = 1, callingUid = e.systemUiUid, action = LaunchRules.PICKER_ACTIONS.first()), e, m, 1000)))
+    }
+
+    @Test fun allEntrancesRespectExclusionAndLock() {
+        val e = Environment(); val m = LaunchMemory()
+        val sources = listOf(
+            link().copy(hasResultTo = false, callingUid = e.systemUiUid, callingPackage = systemUi),
+            link().copy(zoomSourceExtra = 1, realCallingUid = e.systemUiUid),
+            link().copy(quickSettingsExtra = true, realCallingUid = e.systemUiUid),
+            link().copy(hasResultTo = false, callingPackage = "android.ext.services"))
+        e.owner = telegram
+        e.excluded += x
+        sources.forEach {
+            assertTrue(pre(it, e, m, 1000) is LaunchDecision.PassThrough)
+            assertTrue(inject(it, e, m, 1000) is LaunchDecision.PassThrough)
+        }
+        e.excluded.clear(); e.unlocked = false
+        sources.forEach { assertTrue(inject(it, e, m, 1000) is LaunchDecision.PassThrough) }
+    }
+
+    @Test fun untrustedMarkerDoesNotCreateNotificationReason() {
+        val e = Environment(); val m = LaunchMemory()
+        assertNotEquals("notification", reason(inject(link().copy(zoomSourceExtra = 1), e, m, 1000)))
+        assertNotEquals("control_center", reason(inject(link().copy(quickSettingsExtra = true), e, m, 1000)))
     }
 }

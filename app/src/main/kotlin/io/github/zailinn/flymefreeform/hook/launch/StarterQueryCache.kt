@@ -10,15 +10,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * PM 查询不能假定在 WM 锁内安全：AOSP Android 15 ComputerEngine 的跨用户/最近任务
- * 查询会进入 ActivityManager。全部查询在主线程投递中执行，钩子只读缓存；冷缓存按未知放行。
- * 包广播后清空并重建，失败不缓存，避免启动早期上下文未就绪永久固定为未知。
+ * 查询会进入 ActivityManager。全部 PM 查询在专用工作线程执行，钩子只读缓存；冷缓存按未知放行。
+ * 包广播后失效并重建，失败不缓存，避免启动早期上下文未就绪永久固定为未知。
  */
 internal class StarterQueryCache(private val effects: StarterSideEffects) {
     private data class App(val uid: Int, val thirdParty: Boolean)
     private val apps = ConcurrentHashMap<String, App>()
     private val owners = ConcurrentHashMap<Int, String>()
     private val resolutions = ConcurrentHashMap<Intent.FilterComparison, String>()
-    private val controlCenter = ConcurrentHashMap<String, Pair<Boolean, Long>>()
     private val pending = ConcurrentHashMap.newKeySet<String>()
     private val warming = AtomicBoolean(false)
     @Volatile private var initialized = false
@@ -26,9 +25,9 @@ internal class StarterQueryCache(private val effects: StarterSideEffects) {
 
     fun warmUp() {
         if (initialized || !warming.compareAndSet(false, true)) return
-        effects.post("query_warmup") { // starter-safety: allow 统一副作用出口，仅投递，不在当前线程查询
+        effects.background("query_warmup") { // starter-safety: allow 统一副作用出口，仅投递，不在当前线程查询
             try {
-                val context = StarterSideEffects.systemContext() ?: return@post
+                val context = StarterSideEffects.systemContext() ?: return@background
                 val pm = context.packageManager
                 @Suppress("DEPRECATION")
                 val installed = pm.getInstalledApplications(0)
@@ -39,9 +38,11 @@ internal class StarterQueryCache(private val effects: StarterSideEffects) {
                 if (!receiverRegistered) {
                     context.registerReceiver(object : BroadcastReceiver() {
                         override fun onReceive(context: Context?, intent: Intent?) {
-                            apps.clear(); owners.clear(); resolutions.clear()
-                            initialized = false
-                            warmUp()
+                            val pkg = intent?.data?.schemeSpecificPart ?: return
+                            apps.remove(pkg)
+                            owners.entries.removeIf { it.value == pkg }
+                            resolutions.clear()
+                            ensureApp(pkg)
                         }
                     }, IntentFilter().apply {
                         addAction(Intent.ACTION_PACKAGE_ADDED)
@@ -90,25 +91,16 @@ internal class StarterQueryCache(private val effects: StarterSideEffects) {
         }
         return null
     }
-    /** 厂商来源查询没有完整锁序证据，只在主线程刷新；短期缓存避免来源标记长期残留。 */
-    fun fromControlCenter(pkg: String): Boolean {
-        val now = android.os.SystemClock.uptimeMillis()
-        val cached = controlCenter[pkg]?.takeIf { now - it.second < 100L }
-        query("control:$pkg") {
-            val value = runCatching {
-                val type = Class.forName("com.android.server.OplusListManagerImpl")
-                val instance = type.getMethod("getInstance").invoke(null)
-                type.getMethod("isFromControlCenterPkg", String::class.java).invoke(instance, pkg) as? Boolean ?: false
-            }.getOrDefault(false)
-            if (controlCenter.size >= 256) controlCenter.clear()
-            controlCenter[pkg] = value to android.os.SystemClock.uptimeMillis()
-        }
-        return cached?.first ?: false
-    }
+    /** 仅供探针确认未持 WM 锁的当前启动调用；不使用跨启动的短期来源缓存。 */
+    fun readControlCenter(pkg: String): Boolean = runCatching {
+        val type = Class.forName("com.android.server.OplusListManagerImpl")
+        val instance = type.getMethod("getInstance").invoke(null)
+        type.getMethod("isFromControlCenterPkg", String::class.java).invoke(instance, pkg) as? Boolean ?: false
+    }.getOrDefault(false)
 
     private fun query(key: String, block: () -> Unit) {
         if (!pending.add(key)) return
-        effects.post("query") { // starter-safety: allow 统一副作用出口，仅投递，不在当前线程查询
+        effects.background("query") { // starter-safety: allow 统一副作用出口，仅投递，不在当前线程查询
             try { runCatching(block) } finally { pending.remove(key) }
         }
     }
