@@ -26,7 +26,7 @@
 设置分为三组：扇形相关、小窗交互与生效范围。以下按分组说明。
 
 <p align="center">
-  <img src="docs/images/home.jpg" width="330" alt="模块首页：三组入口" />
+  <img src="docs/images/home.png" width="330" alt="模块首页：三组入口" />
 </p>
 
 ### 扇形相关
@@ -38,17 +38,17 @@
 - **触发范围**：底角手势的识别区域大小，24–160 dp
 - **命中范围**：手指与图标的判定半径，40–140 dp，默认 100 dp
 - **数量上限**：默认圆弧中同时显示的条目数，1–6；「更多」入口不占位
-- **图标形状**：扇形、「更多」面板与本应用列表的图标统一为方形（系统原样，工具与快捷入口裁成与应用图标相同的外形）或圆形
+- **图标形状**：扇形、「更多」面板与本应用列表的图标统一为方形（系统原样，工具、快捷入口与扇形里的「更多」入口都用与应用图标相同的外形）或圆形
 - **多圆弧**：开启后可选 1–4 条圆弧。第 1 条为默认圆弧，保留数量上限内的快捷项与「更多」入口；新增圆弧依次向内收拢，容量为 5、4、3 项，越往内越少
-- **外大内小**：外圈应用图标与「更多」圆盘同大，内侧圆弧逐圈缩小（两圈每圈 ×0.92，三四圈每圈 ×0.95），只改显示大小，不影响判定
+- **外大内小**：外圈应用图标与「更多」入口同大，内侧圆弧逐圈缩小（两圈每圈 ×0.92，三四圈每圈 ×0.95），只改显示大小，不影响判定
 - **屏幕中央显示所选应用**：滑选时在屏幕正中实时显示所选应用的大图标，可选同时显示应用名；中央图标大小 48–160 dp 可调
 
 <p align="center">
-  <img src="docs/images/trigger-range.jpg" width="330" alt="触发范围设置" />
+  <img src="docs/images/trigger-range.png" width="330" alt="扇形相关设置页：中央图标大小、图标形状、触发范围等" />
 </p>
 
 <p align="center">
-  <img src="docs/images/hit-range-preview.jpg" width="330" alt="拖动命中范围时的实时预览" />
+  <img src="docs/images/hit-range-preview.png" width="330" alt="拖动命中范围时的实时预览" />
 </p>
 
 拖动命中范围滑条时，屏幕上会按当前数值画出每一格的判定圈，松手即保存。
@@ -63,7 +63,7 @@
 - **滑动选中**：滑到某一格时该图标放大至 1.2 倍作为反馈，判定依据是手指与图标圆心的距离，松手即启动
 
 <p align="center">
-  <img src="docs/images/radial-apps.jpg" width="330" alt="扇形应用页" />
+  <img src="docs/images/radial-apps.png" width="330" alt="扇形应用页：按圈分页编辑" />
 </p>
 
 ### 「更多」面板
@@ -77,7 +77,7 @@
 - **位置**：固定在扇形末尾，不占用条目上限
 
 <p align="center">
-  <img src="docs/images/more-panel.jpg" width="330" alt="更多面板：收藏与最近" />
+  <img src="docs/images/more-panel.png" width="330" alt="「更多」面板：原有列表与字母索引条" />
 </p>
 
 ### 小窗交互
@@ -91,7 +91,7 @@
 - **快速上滑**：在普通小窗底部横条上快速上滑，切换为迷你小窗
 
 <p align="center">
-  <img src="docs/images/settings-zoom.jpg" width="330" alt="小窗交互设置页" />
+  <img src="docs/images/settings-zoom.png" width="330" alt="小窗交互设置页" />
 </p>
 
 ### 生效范围
@@ -103,7 +103,7 @@
 - **游戏模式**：系统进入游戏模式时暂停扇形呼出，退出后自动启用
 
 <p align="center">
-  <img src="docs/images/settings-scope.jpg" width="330" alt="生效范围设置页" />
+  <img src="docs/images/settings-scope.png" width="330" alt="生效范围设置页" />
 </p>
 
 ### 其他
