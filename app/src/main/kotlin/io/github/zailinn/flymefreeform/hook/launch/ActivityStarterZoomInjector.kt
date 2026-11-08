@@ -2,11 +2,13 @@ package io.github.zailinn.flymefreeform.hook.launch
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.zailinn.flymefreeform.hook.ModuleEnvironmentState
 import io.github.libxposed.api.XposedModule
 import io.github.zailinn.flymefreeform.hook.ProcessConfiguration
+import io.github.zailinn.flymefreeform.hook.ZoomTaskCloser
 import io.github.zailinn.flymefreeform.log.ModuleLog
 import io.github.zailinn.flymefreeform.log.VerboseLog
 
@@ -24,6 +26,15 @@ internal class ActivityStarterZoomInjector(
 ) {
     private var installedHooks = 0
     private val preempting = ThreadLocal<Boolean>()
+
+    /** 最近一次以小窗打开的应用，供识别其中转页的自我重启（见 [isSelfRelaunch]）。 */
+    @Volatile private var lastZoomTarget: String? = null
+    @Volatile private var lastZoomAt = 0L
+    @Volatile private var lastZoomHops = 0
+
+    /** 最近一次被抢占的应用间链接，用于吞掉发起方紧接着重发的同一链接。 */
+    @Volatile private var lastLinkKey: String? = null
+    @Volatile private var lastLinkAt = 0L
     private var cachedSystemUiUid: Int? = null
     private var cachedLauncherUid: Int? = null
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -106,12 +117,48 @@ internal class ActivityStarterZoomInjector(
         // startActivityForResult 的跨应用启动（登录、授权、选图、分享回传）需要目标
         // 把结果回传并自行 finish；改由 zoom 入口另起一次启动会打断回传链路，
         // 表现为授权窗口不关闭、或直接提示用户取消。这类启动一律放行。
-        if (request?.let { readField(it, "resultTo") } != null) return false
+        //
+        // 但从 Activity 调 startActivity 同样带 resultTo（发起页的 token），只是 requestCode 为 -1。
+        // 只有 requestCode >= 0 才是真的在等结果；字段读不到时 intField 返回 0，按等结果处理。
+        val hasResultTo = request?.let { readField(it, "resultTo") } != null
+        val waitsForResult = hasResultTo && (request?.let { intField(it, "requestCode") } ?: 0) >= 0
+        if (waitsForResult) return false
+        val now = SystemClock.uptimeMillis()
+        // 中转页自我重启：带链接数据的（Chrome 的 IntentDispatcher → CustomTabActivity）改走 zoom 入口；
+        // 不带数据的（X 以 MAIN + CLEAR_TASK 重启自身，链接在 extras 里）不在这里接管，
+        // 交给 inject 往原启动注入小窗参数，链接随原 Intent 送达（见 [inject]）。
+        val selfRelaunch =
+            intent.data != null && isSelfRelaunch(settings.zoomLaunch, callingPackage, target, intent, now)
+        val linkCandidate =
+            !selfRelaunch && hasResultTo && pendingIntent == null &&
+                isPlainInterAppLink(settings.zoomLaunch, callingPackage, target, intent)
+        // 目标已在小窗里：zoom 入口只会把旧任务提到前台，新链接送不到（X 实测连点无反应）；
+        // 放行普通启动虽能送到链接，但 X 随后以 CLEAR_TASK 重启自身时系统不认小窗参数，退成全屏。
+        // 所以先关掉旧小窗，再按首次打开的路径以小窗重开（见 [reopenInZoom]）。
+        val alreadyZoomed = linkCandidate && isShowingInZoom(target)
+        if (alreadyZoomed) ModuleLog.debug(TAG) { "ZOOM_LINK_TARGET_IN_ZOOM_" + stage + "_" + target }
+        val plainLink = linkCandidate && !alreadyZoomed
+        // 其余分支沿用原口径：带 resultTo 的启动不由它们接管。
+        if (hasResultTo && !selfRelaunch && !linkCandidate) return false
+        val linkKey = if (linkCandidate) callingPackage + "|" + target + "|" + intent.dataString else null
+        if (linkKey != null && linkKey == lastLinkKey && now - lastLinkAt < DUPLICATE_LINK_MS &&
+            environment?.isDeviceUnlocked(refreshKeyguard = false) != false
+        ) {
+            // 发起方（如 Telegram）会紧接着用不同 flags 重发同一链接；前一次已开成小窗，这次直接吞掉，
+            // 否则会再走一次系统启动，把刚开的小窗顶成全屏。
+            ModuleLog.debug(TAG) { "ZOOM_PREEMPT_DUPLICATE_" + stage + "_" + target }
+            return true
+        }
+        if (alreadyZoomed) return reopenInZoom(intent, target, callingPackage, linkKey, stage)
         val eligible =
             when {
                 // 锁屏与息屏状态下不接管任何启动：此时系统正在显示锁屏界面或恢复桌面，
                 // 抢占会使窗口创建在锁屏之下，解锁前不可见，表现为点击无响应。
                 environment?.isDeviceUnlocked(refreshKeyguard = true) == false -> false
+                selfRelaunch -> true
+                // 从 Activity 以 startActivity 打开别的应用的链接（Telegram 点链接 → X / 浏览器）：
+                // 只往 options 注入小窗参数会被柔性任务控制器拒绝（reason:8/9），实测退化为全屏。
+                plainLink -> true
                 // 第三方应用把 Intent 交给系统分发服务代发（酷安点链接 → 浏览器就属这类）：
                 // 该启动由后台发起，往 options 里注入小窗参数会被柔性任务控制器拒绝
                 // （adjustOptionsForFlexibleTask reason:9），窗口创建不出来，表现为点击无反应。
@@ -129,6 +176,9 @@ internal class ActivityStarterZoomInjector(
             }
         ModuleLog.debug(TAG) { "ZOOM_DECISION_" + stage +
                 "_ok" + eligible +
+                "_rt" + (if (hasResultTo) 1 else 0) +
+                "_self" + (if (selfRelaunch) 1 else 0) +
+                "_link" + (if (plainLink) 1 else 0) +
                 "_pi" + (if (pendingIntent != null) 1 else 0) +
                 "_su" + (if (fromSystemUi) 1 else 0) +
                 "_cp" + callingPackage +
@@ -143,12 +193,120 @@ internal class ActivityStarterZoomInjector(
             val started = startZoomWindow(intent, target)
             if (started) {
                 ModuleLog.debug(TAG) { "ZOOM_PREEMPTED_" + target }
+                markZoomed(target, selfRelaunch)
+                if (linkKey != null) {
+                    lastLinkKey = linkKey
+                    lastLinkAt = SystemClock.uptimeMillis()
+                    interAppTracker?.record(callingPackage, target)
+                }
             }
             started
         } finally {
             preempting.set(false)
         }
     }
+
+    /**
+     * 目标已在小窗时打开新链接：吞掉本次启动，投递到主线程先关旧小窗，稍后以 zoom 入口重开。
+     *
+     * 关小窗（exitFlexibleTask）与重开都不能在 starter 钩子里同步做：此处持有 WindowManagerGlobalLock，
+     * 同步执行有锁序风险（参见 1.4.0 死锁）。拿不到关窗入口时放行普通启动，链接仍能送到，只是可能退成全屏。
+     */
+    private fun reopenInZoom(
+        intent: Intent,
+        target: String,
+        callingPackage: String,
+        linkKey: String?,
+        stage: String,
+    ): Boolean {
+        if (environment?.isDeviceUnlocked(refreshKeyguard = true) == false) return false
+        val closer = ZoomTaskCloser.closer
+        if (closer == null) {
+            markZoomed(target, selfRelaunch = false)
+            ModuleLog.debug(TAG) { "ZOOM_REOPEN_UNAVAILABLE_" + stage + "_" + target }
+            return false
+        }
+        val copy = Intent(intent)
+        lastLinkKey = linkKey
+        lastLinkAt = SystemClock.uptimeMillis()
+        interAppTracker?.record(callingPackage, target)
+        ModuleLog.debug(TAG) { "ZOOM_REOPEN_SCHEDULED_" + stage + "_" + target }
+        handler.post {
+            val closed = runCatching { closer(target) }.getOrDefault(false)
+            handler.postDelayed(
+                {
+                    preempting.set(true)
+                    try {
+                        val started = startZoomWindow(copy, target)
+                        if (started) markZoomed(target, selfRelaunch = false)
+                        ModuleLog.debug(TAG) {
+                            "ZOOM_REOPENED_closed" + closed + "_started" + started + "_" + target
+                        }
+                    } finally {
+                        preempting.set(false)
+                    }
+                },
+                if (closed) REOPEN_DELAY_MS else 0L,
+            )
+        }
+        return true
+    }
+
+    /**
+     * 目标应用当前是否以小窗显示。
+     *
+     * 可以在 starter 钩子里同步调用：OplusZoomWindowManager → OplusActivityTaskManager →
+     * FlexibleWindowManagerService.getCurrentZoomWindowState 只拿 WindowManagerGlobalLock（本线程可重入）
+     * 与 OplusFlexibleInfoManager 内部的叶子锁，不碰 AMS 锁（反编译 oplus-services / oplus-framework 核实）。
+     */
+    private fun isShowingInZoom(target: String): Boolean =
+        runCatching {
+            val managerClass = Class.forName(ZOOM_MANAGER_CLASS)
+            val instance = managerClass.getMethod("getInstance").invoke(null) ?: return false
+            val info = managerClass.getMethod("getCurrentZoomWindowState").invoke(instance) ?: return false
+            val pkg = info.javaClass.getField("zoomPkg").get(info) as? String
+            val shown = info.javaClass.getField("windowShown").getBoolean(info)
+            shown && pkg == target
+        }.getOrDefault(false)
+
+    /** 记录一次小窗打开；中转页重启连续接管时累加次数。 */
+    private fun markZoomed(target: String, selfRelaunch: Boolean) {
+        lastZoomHops = if (selfRelaunch) lastZoomHops + 1 else 0
+        lastZoomTarget = target
+        lastZoomAt = SystemClock.uptimeMillis()
+    }
+
+    /**
+     * 刚以小窗打开的应用在 [SELF_RELAUNCH_WINDOW_MS] 内以 NEW_TASK 重启自身（中转页）。
+     * 只认 NEW_TASK：应用内正常翻页沿用当前任务，本就留在小窗里，不需要接管。
+     * 连续重启最多接管 [MAX_SELF_RELAUNCH_HOPS] 次，避免异常应用反复自启时形成循环。
+     */
+    private fun isSelfRelaunch(zoomLaunch: Boolean, callingPackage: String?, target: String, intent: Intent, now: Long): Boolean =
+        zoomLaunch &&
+            callingPackage == target &&
+            target == lastZoomTarget &&
+            now - lastZoomAt < SELF_RELAUNCH_WINDOW_MS &&
+            lastZoomHops < MAX_SELF_RELAUNCH_HOPS &&
+            (intent.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0 &&
+            environment?.isExcluded(target) != true
+
+    /**
+     * 第三方应用以 startActivity（不等结果）打开另一个应用的链接。
+     * 只接 ACTION_VIEW：登录、授权、选图等走 startActivityForResult 或其他 action，不在此列；
+     * 原路返回（目标再唤起发起方）交给 [InterAppLaunchTracker] 识别后放行。
+     */
+    private fun isPlainInterAppLink(zoomLaunch: Boolean, callingPackage: String, target: String, intent: Intent): Boolean =
+        zoomLaunch &&
+            intent.action == Intent.ACTION_VIEW &&
+            callingPackage.isNotEmpty() &&
+            callingPackage != target &&
+            callingPackage != LAUNCHER_PACKAGE &&
+            callingPackage != SYSTEM_UI_PACKAGE &&
+            target !in SKIP_TARGETS &&
+            target !in INTER_APP_FULLSCREEN_TARGETS &&
+            environment?.isExcluded(target) != true &&
+            isThirdPartyApplication(callingPackage) &&
+            interAppTracker?.consumeIfReturning(callingPackage, target) != true
 
     /**
      * 启动来源探针：只读，不改写任何字段，仅在「详细日志」开启时输出一行。
@@ -244,17 +402,26 @@ internal class ActivityStarterZoomInjector(
                 "_e" + intent.getIntExtra(ZoomLaunchSpec.EXTRA_SOURCE, 0) +
                     "_cc" + (if (fromControlCenter(intent.component?.packageName ?: intent.getPackage() ?: "")) 1 else 0) }
         }
+        // 不带链接数据的中转页自我重启（X）：只注入小窗参数，不另起启动，链接与 extras 原样送达。
+        val selfTarget = intent.component?.packageName ?: intent.getPackage() ?: resolveTarget(intent, request)
+        val selfInject =
+            intent.data == null && selfTarget != null &&
+                isSelfRelaunch(settings.zoomLaunch, callingPackage, selfTarget, intent, SystemClock.uptimeMillis())
         val reason =
-            reasonFor(
-                intent,
-                callingUid,
-                realCallingUid,
-                requestRealUid,
-                pendingIntent,
-                systemUiUid,
-                callingPackage,
-                hasResultTo,
-            ) ?: return
+            if (selfInject) {
+                "self_relaunch"
+            } else {
+                reasonFor(
+                    intent,
+                    callingUid,
+                    realCallingUid,
+                    requestRealUid,
+                    pendingIntent,
+                    systemUiUid,
+                    callingPackage,
+                    hasResultTo,
+                ) ?: return
+            }
         intent.putExtra(ZoomLaunchSpec.EXTRA_APPLIED, 1)
 
         val original = optionsBundle(starter, request)
@@ -272,6 +439,7 @@ internal class ActivityStarterZoomInjector(
                 .onFailure { module.log(Log.WARN, TAG, "ZOOM_OPTIONS_WRITE_FAILED", it) }
         }
         ModuleLog.debug(TAG) { "ZOOM_INJECTED_" + reason }
+        if (selfInject && selfTarget != null) markZoomed(selfTarget, selfRelaunch = true)
         if (reason == "notification") collapseShade()
         // 记录本次跨应用跳转，供发起方回到前台时关闭目标浮窗。
         if (reason == "inter_app" && callingPackage != null) {
@@ -348,6 +516,13 @@ internal class ActivityStarterZoomInjector(
             return "notification"
         }
         if (intent.getBooleanExtra(EXTRA_QUICK_SETTINGS, false)) return "control_center"
+        // 系统全局搜索（桌面下滑呼出的搜索页）始终全屏。
+        // 必须在桌面「卡片」判定之前：桌面以 startActivityForResult 拉起搜索页
+        // （cp=桌面、rt=1、action 非 MAIN），正好命中卡片分支，会被开成小窗。
+        if (intent.action == ACTION_GLOBAL_SEARCH) {
+            ModuleLog.debug(TAG) { "ZOOM_SKIP_GLOBAL_SEARCH" }
+            return null
+        }
         // 通知点击经 PendingIntent 下发，发起方为 SystemUI。
         //
         // 常规通知由 SystemUI 的通知启动入口改写参数，此处若再次写入会覆盖系统已设定的
@@ -395,6 +570,17 @@ internal class ActivityStarterZoomInjector(
         //
         // 该判定先于 SKIP_TARGETS：分享面板由系统包承载，但属于用户主动发起的跳转，
         // 按组件精确放行，其余系统组件维持全屏。
+        // 链接一律全屏打开的应用（见 INTER_APP_FULLSCREEN_TARGETS），不注入小窗参数。
+        // 只管应用间跳转：桌面卡片、快捷项与 SystemUI 入口照常。
+        if (target in INTER_APP_FULLSCREEN_TARGETS &&
+            callingPackage != null &&
+            callingPackage != target &&
+            callingPackage != LAUNCHER_PACKAGE &&
+            callingPackage != SYSTEM_UI_PACKAGE
+        ) {
+            ModuleLog.debug(TAG) { "ZOOM_SKIP_INTER_APP_FULLSCREEN_" + target }
+            return null
+        }
         if (hasResultTo &&
             callingPackage != null &&
             callingPackage != LAUNCHER_PACKAGE &&
@@ -519,13 +705,22 @@ internal class ActivityStarterZoomInjector(
     }
 
     /** 请求 SystemUI 收起 ColorOS 大横幅（它不受 collapsePanels 控制）。 */
+    /**
+     * 请求 SystemUI 收起大横幅。
+     *
+     * 必须投递到主线程异步发送：调用方是 ActivityStarter 钩子，此时持有 WindowManagerGlobalLock，
+     * 同步 sendBroadcast 要拿 AMS 锁；若另一线程正持 AMS 锁等 WM 锁（如被启动的应用正在 attachApplication），
+     * 两边互等，system_server 死锁、看门狗重启（1.4.0 实测）。
+     */
     private fun requestBannerCollapse() {
-        runCatching {
-            systemContext()?.sendBroadcast(
-                Intent(ACTION_COLLAPSE_BANNER).setPackage(SYSTEM_UI_PACKAGE),
-            )
-            ModuleLog.debug(TAG) { "ZOOM_BANNER_COLLAPSE_REQUESTED" }
-        }.onFailure { module.log(Log.WARN, TAG, "ZOOM_BANNER_COLLAPSE_FAILED", it) }
+        handler.post {
+            runCatching {
+                systemContext()?.sendBroadcast(
+                    Intent(ACTION_COLLAPSE_BANNER).setPackage(SYSTEM_UI_PACKAGE),
+                )
+                ModuleLog.debug(TAG) { "ZOOM_BANNER_COLLAPSE_REQUESTED" }
+            }.onFailure { module.log(Log.WARN, TAG, "ZOOM_BANNER_COLLAPSE_FAILED", it) }
+        }
     }
 
     /** 同步收起通知面板/横幅：不排延迟，调用即发出收起请求。 */
@@ -690,6 +885,26 @@ internal class ActivityStarterZoomInjector(
     private companion object {
         const val TAG = "FlymeFreeform"
         const val ACTIVITY_STARTER_CLASS = "com.android.server.wm.ActivityStarter"
+
+        /** 系统全局搜索：桌面下滑呼出的搜索页，始终全屏。 */
+        const val ACTION_GLOBAL_SEARCH = "android.search.action.GLOBAL_SEARCH"
+
+        /**
+         * 应用间跳转一律保持全屏的目标。
+         *
+         * 曾放入 X（com.twitter.android）；用户 2026-11-08 改为让 X 也以小窗打开，中转页重启改由
+         * 注入处理（见 [inject]），名单暂空，保留给以后实测小窗不可用的应用。
+         */
+        val INTER_APP_FULLSCREEN_TARGETS = emptySet<String>()
+
+        /** 中转页自我重启的识别窗口与最多接管次数。 */
+        const val SELF_RELAUNCH_WINDOW_MS = 3_000L
+        const val MAX_SELF_RELAUNCH_HOPS = 2
+
+        /** 发起方重发同一链接的识别窗口。 */
+        const val DUPLICATE_LINK_MS = 1_500L
+        /** 关掉旧小窗后等它退场再重开，避免与退出动画抢同一任务。 */
+        const val REOPEN_DELAY_MS = 400L
 
         /** 控制中心启动应用时携带的字段。 */
         const val EXTRA_QUICK_SETTINGS = "start_from_systemui_qs"

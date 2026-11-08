@@ -106,6 +106,7 @@ internal class OutsideTapCloseHookInstaller(
                         val result = chain.proceed()
                         val controller = chain.thisObject
                         val task = chain.getArg(0)
+                        if (controller != null) access.rememberController(controller)
                         if (controller != null && task != null) {
                             listOf(500L, 1000L, 1600L, 2600L).forEach { delay ->
                                 skinHandler.postDelayed(
@@ -120,6 +121,17 @@ internal class OutsideTapCloseHookInstaller(
                         result
                     }
             }.onFailure { logFailure("OUTSIDE_TAP_REFRESH_HOOK_FAILED", it) }
+            ZoomTaskCloser.closer = { packageName ->
+                try {
+                    access.closeTopZoomTaskOf(packageName)
+                } catch (exception: ReflectiveOperationException) {
+                    logFailure("ZOOM_TASK_CLOSE_REFLECTION_FAILED", exception)
+                    false
+                } catch (exception: RuntimeException) {
+                    logFailure("ZOOM_TASK_CLOSE_FAILED", exception)
+                    false
+                }
+            }
             configuration.observe(access::onConfigurationChanged)
             environment.observe { access.onConfigurationChanged(configuration.snapshot) }
             module
@@ -568,6 +580,26 @@ internal class OutsideTapCloseHookInstaller(
                 return
             }
             exitFlexibleTask.invokeUnwrapped(controller, task, true, 0, 0)
+        }
+
+        @Volatile
+        private var lastController: Any? = null
+
+        fun rememberController(controller: Any) {
+            lastController = controller
+        }
+
+        /** 关闭指定应用最上层的普通小窗；最上层小窗不属于该应用或不是普通小窗时不动并返回 false。 */
+        fun closeTopZoomTaskOf(packageName: String): Boolean {
+            val controller = lastController ?: return false
+            val task = getTopZoomTask.invokeUnwrapped(controller) ?: return false
+            val taskPackage =
+                task.javaClass.methods
+                    .firstOrNull { it.name == "getBasePackageName" && it.parameterCount == 0 }
+                    ?.invoke(task) as? String
+            if (taskPackage != packageName || !isOrdinaryZoom(controller, task)) return false
+            exitFlexibleTask.invokeUnwrapped(controller, task, true, 0, 0)
+            return true
         }
 
         /** 关闭横条所属的普通小窗；不是普通小窗（迷你、游戏悬浮窗等）时不动并返回 false。 */
