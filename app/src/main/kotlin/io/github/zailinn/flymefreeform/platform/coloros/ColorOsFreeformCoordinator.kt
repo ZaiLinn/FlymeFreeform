@@ -507,6 +507,7 @@ internal class ColorOsFreeformCoordinator(
                 centerPreview = lastSettings.radialCenterPreview,
                 centerLabel = lastSettings.radialCenterLabel,
                 centerSizeDp = lastSettings.radialCenterSizeDp,
+                moreColor = lastSettings.radialMoreColor,
             )
             overlay = view
             try {

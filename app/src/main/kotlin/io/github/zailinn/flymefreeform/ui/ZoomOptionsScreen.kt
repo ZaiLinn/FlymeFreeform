@@ -4,8 +4,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Block
-import androidx.compose.material.icons.rounded.ScreenRotation
-import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.SwipeUp
 import androidx.compose.material.icons.rounded.TouchApp
@@ -24,8 +22,8 @@ import top.yukonga.miuix.kmp.preference.OverlaySpinnerPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 
 /**
- * 小窗交互与生效范围的合并页面，排除列表置顶并供小窗跳转共用。
- * 横屏与游戏模式开关仅暂停扇形呼出。
+ * 小窗设置：排除列表置顶并供小窗跳转共用；其下分「打开方式」与「小窗操作」两组。
+ * 横屏与游戏模式开关只暂停扇形呼出，已移到扇形设置的「呼出」组。
  *
  * 各项独立挂钩、独立判定，互不依赖：
  * - 窗外关闭：扩展标题层触摸区，接管窗外的点击；
@@ -45,8 +43,6 @@ internal fun ZoomOptionsScreen(
     onZoomLaunchChange: (Boolean) -> Unit,
     onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
     onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
-    onPauseInLandscapeChange: (Boolean) -> Unit,
-    onPauseInGameModeChange: (Boolean) -> Unit,
     onNavigateToBlacklist: () -> Unit,
 ) {
     val enabled = state.settingsEditable && state.settings.enabled
@@ -80,18 +76,23 @@ internal fun ZoomOptionsScreen(
                 )
             }
         }
-        item(key = "options") {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                OverlaySpinnerPreference(
-                    items = outsideTapItems,
-                    selectedIndex = outsideTapModes.indexOf(state.settings.outsideTapCloseMode),
-                    title = stringResource(R.string.outside_tap_close_title),
-                    summary = stringResource(R.string.outside_tap_close_summary),
+        item(key = "open_mode") {
+            SettingsGroup(title = stringResource(R.string.settings_group_zoom_open)) {
+                SwitchPreference(
+                    checked = state.settings.zoomLaunch,
+                    onCheckedChange = onZoomLaunchChange,
+                    title = stringResource(R.string.zoom_launch_title),
+                    summary = stringResource(R.string.zoom_launch_summary),
                     enabled = enabled,
-                    startAction = { PreferenceIcon(Icons.Rounded.TouchApp, enabled) },
-                    onSelectedIndexChange = { index ->
-                        outsideTapModes.getOrNull(index)?.let(onOutsideTapCloseModeChange)
-                    },
+                    startAction = { PreferenceIcon(Icons.Rounded.SwapHoriz, enabled) },
+                )
+                SwitchPreference(
+                    checked = state.settings.zoomAllowAnyApp,
+                    onCheckedChange = onZoomAllowAnyAppChange,
+                    title = stringResource(R.string.zoom_allow_any_app_title),
+                    summary = stringResource(R.string.zoom_allow_any_app_summary),
+                    enabled = enabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.Apps, enabled) },
                 )
                 // 下标即取值：0 = 跟随系统，1–5 = 指定个数。
                 OverlaySpinnerPreference(
@@ -105,21 +106,20 @@ internal fun ZoomOptionsScreen(
                         onZoomMaxWindowCountChange(ModulePreferences.coerceZoomMaxWindowCount(index))
                     },
                 )
-                SwitchPreference(
-                    checked = state.settings.zoomAllowAnyApp,
-                    onCheckedChange = onZoomAllowAnyAppChange,
-                    title = stringResource(R.string.zoom_allow_any_app_title),
-                    summary = stringResource(R.string.zoom_allow_any_app_summary),
+            }
+        }
+        item(key = "window_actions") {
+            SettingsGroup(title = stringResource(R.string.settings_group_zoom_actions)) {
+                OverlaySpinnerPreference(
+                    items = outsideTapItems,
+                    selectedIndex = outsideTapModes.indexOf(state.settings.outsideTapCloseMode),
+                    title = stringResource(R.string.outside_tap_close_title),
+                    summary = stringResource(R.string.outside_tap_close_summary),
                     enabled = enabled,
-                    startAction = { PreferenceIcon(Icons.Rounded.Apps, enabled) },
-                )
-                SwitchPreference(
-                    checked = state.settings.zoomLaunch,
-                    onCheckedChange = onZoomLaunchChange,
-                    title = stringResource(R.string.zoom_launch_title),
-                    summary = stringResource(R.string.zoom_launch_summary),
-                    enabled = enabled,
-                    startAction = { PreferenceIcon(Icons.Rounded.SwapHoriz, enabled) },
+                    startAction = { PreferenceIcon(Icons.Rounded.TouchApp, enabled) },
+                    onSelectedIndexChange = { index ->
+                        outsideTapModes.getOrNull(index)?.let(onOutsideTapCloseModeChange)
+                    },
                 )
                 SwitchPreference(
                     checked = state.settings.handleSwipeUpToMiniEnabled,
@@ -128,26 +128,6 @@ internal fun ZoomOptionsScreen(
                     summary = stringResource(R.string.handle_swipe_up_to_mini_summary),
                     enabled = enabled,
                     startAction = { PreferenceIcon(Icons.Rounded.SwipeUp, enabled) },
-                )
-            }
-        }
-        item(key = "environment") {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                SwitchPreference(
-                    checked = state.settings.pauseInLandscape,
-                    onCheckedChange = onPauseInLandscapeChange,
-                    title = stringResource(R.string.pause_in_landscape_title),
-                    summary = stringResource(R.string.pause_in_landscape_summary),
-                    enabled = enabled,
-                    startAction = { PreferenceIcon(Icons.Rounded.ScreenRotation, enabled) },
-                )
-                SwitchPreference(
-                    checked = state.settings.pauseInGameMode,
-                    onCheckedChange = onPauseInGameModeChange,
-                    title = stringResource(R.string.pause_in_game_mode_title),
-                    summary = stringResource(R.string.pause_in_game_mode_summary),
-                    enabled = enabled,
-                    startAction = { PreferenceIcon(Icons.Rounded.SportsEsports, enabled) },
                 )
             }
         }

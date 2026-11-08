@@ -49,6 +49,7 @@ internal object ModulePreferences {
     const val KEY_RADIAL_CENTER_PREVIEW = "radial_center_preview"
     const val KEY_RADIAL_CENTER_LABEL = "radial_center_label"
     const val KEY_RADIAL_CENTER_SIZE_DP = "radial_center_size_dp"
+    const val KEY_RADIAL_MORE_COLOR = "radial_more_color"
     const val DEFAULT_ENABLED = false
     const val DEFAULT_CORNER_ENABLED = true
     const val DEFAULT_CORNER_TRIGGER_RANGE_DP = 84
@@ -72,6 +73,8 @@ internal object ModulePreferences {
     const val DEFAULT_RADIAL_CENTER_LABEL = true
     /** 屏幕中央所选应用卡片里的图标边长。 */
     const val DEFAULT_RADIAL_CENTER_SIZE_DP = 96
+    /** 「更多」按钮底板颜色（ARGB）；0 表示跟随系统深浅色。 */
+    const val DEFAULT_RADIAL_MORE_COLOR = 0
     const val MIN_RADIAL_CENTER_SIZE_DP = 48
     const val MAX_RADIAL_CENTER_SIZE_DP = 160
     /** 默认圆弧固定项的上限。内侧圆弧各自的上限见 RadialArcPlan.pinCapacity。 */
@@ -108,6 +111,26 @@ internal object ModulePreferences {
 
     fun coerceRadialHitRangeDp(value: Int): Int =
         value.coerceIn(MIN_RADIAL_HIT_RANGE_DP, MAX_RADIAL_HIT_RANGE_DP)
+
+    /**
+     * 0 保留为「跟随系统」；自定义颜色保留透明度，但不低于 [MIN_RADIAL_MORE_ALPHA]，
+     * 避免按钮几乎看不见，也避免全透明的颜色与 0 混淆。
+     */
+    fun coerceRadialMoreColor(value: Int): Int {
+        if (value == DEFAULT_RADIAL_MORE_COLOR) return value
+        return customRadialMoreColor(value)
+    }
+
+    /**
+     * 取色器选出的颜色一律当作自定义：透明度抬到 [MIN_RADIAL_MORE_ALPHA] 以上，结果永不为 0。
+     * 否则选中全透明黑色（0x00000000）会被当成「跟随系统」。
+     */
+    fun customRadialMoreColor(value: Int): Int {
+        val alpha = (value ushr 24).coerceAtLeast(MIN_RADIAL_MORE_ALPHA)
+        return (alpha shl 24) or (value and 0xFFFFFF)
+    }
+
+    const val MIN_RADIAL_MORE_ALPHA = 0x33
 
     fun coerceRadialCenterSizeDp(value: Int): Int =
         value.coerceIn(MIN_RADIAL_CENTER_SIZE_DP, MAX_RADIAL_CENTER_SIZE_DP)

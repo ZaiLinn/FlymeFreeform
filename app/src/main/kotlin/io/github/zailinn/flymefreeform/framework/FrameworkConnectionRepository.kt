@@ -109,6 +109,9 @@ internal class FrameworkConnectionRepository(private val context: Context) {
     fun setRadialCenterLabel(enabled: Boolean) =
         updateSettings { it.copy(radialCenterLabel = enabled) }
 
+    fun setRadialMoreColor(color: Int) =
+        updateSettings { it.copy(radialMoreColor = ModulePreferences.coerceRadialMoreColor(color)) }
+
     fun setRadialCenterSizeDp(sizeDp: Int) =
         updateSettings { it.copy(radialCenterSizeDp = ModulePreferences.coerceRadialCenterSizeDp(sizeDp)) }
 
@@ -117,12 +120,14 @@ internal class FrameworkConnectionRepository(private val context: Context) {
             it.copy(radialMaxItems = ModulePreferences.coerceRadialMaxItems(count))
         }
 
-    fun setRadialMultiArcEnabled(enabled: Boolean) =
-        updateSettings { it.copy(radialMultiArcEnabled = enabled) }
-
-    fun setRadialArcCount(count: Int) =
+    /**
+     * 圆弧条数一次写入：1 条即关闭多圆弧（保留上次的条数），2–4 条同时打开多圆弧并设条数。
+     * 合在一次 updateSettings 里，避免分两次写入时中间状态被广播出去。
+     */
+    fun setRadialArcs(count: Int) =
         updateSettings {
-            it.copy(radialArcCount = ModulePreferences.coerceRadialArcCount(count))
+            val arcs = ModulePreferences.coerceRadialArcCount(count)
+            if (arcs <= 1) it.copy(radialMultiArcEnabled = false) else it.copy(radialMultiArcEnabled = true, radialArcCount = arcs)
         }
 
     fun setRadialFillSource(source: Int) =

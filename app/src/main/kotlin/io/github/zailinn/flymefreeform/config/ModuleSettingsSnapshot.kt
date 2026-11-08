@@ -49,6 +49,8 @@ internal data class ModuleSettingsSnapshot(
     val radialCenterLabel: Boolean = ModulePreferences.DEFAULT_RADIAL_CENTER_LABEL,
     /** 屏幕中央卡片的图标边长（dp），48–160。 */
     val radialCenterSizeDp: Int = ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP,
+    /** 「更多」按钮底板颜色（ARGB），0 为跟随系统；三个点按底板亮度自动取黑或白。 */
+    val radialMoreColor: Int = ModulePreferences.DEFAULT_RADIAL_MORE_COLOR,
     /**
      * 第 2～4 条圆弧各自的固定项（下标 0 对应第 2 条）。空列表表示该圈用最近使用的应用补满。
      * 与圆弧条数无关，始终保存三份。
@@ -95,6 +97,7 @@ internal data class ModuleSettingsSnapshot(
                 ModulePreferences.KEY_RADIAL_CENTER_SIZE_DP,
                 ModulePreferences.coerceRadialCenterSizeDp(radialCenterSizeDp),
             )
+            .putInt(ModulePreferences.KEY_RADIAL_MORE_COLOR, ModulePreferences.coerceRadialMoreColor(radialMoreColor))
             .putInt(
                 ModulePreferences.KEY_RADIAL_MAX_ITEMS,
                 ModulePreferences.coerceRadialMaxItems(radialMaxItems),
@@ -286,6 +289,10 @@ internal data class ModuleSettingsSnapshot(
                             ModulePreferences.KEY_RADIAL_CENTER_SIZE_DP,
                             ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP,
                         ),
+                    ),
+                radialMoreColor =
+                    ModulePreferences.coerceRadialMoreColor(
+                        preferences.getInt(ModulePreferences.KEY_RADIAL_MORE_COLOR, ModulePreferences.DEFAULT_RADIAL_MORE_COLOR),
                     ),
                 radialMaxItems =
                     ModulePreferences.coerceRadialMaxItems(

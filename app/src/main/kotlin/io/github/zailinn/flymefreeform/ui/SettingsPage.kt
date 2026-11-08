@@ -3,6 +3,7 @@ package io.github.zailinn.flymefreeform.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
@@ -34,5 +35,23 @@ internal fun SettingsPage(
                 ),
             content = content,
         )
+    }
+}
+
+/**
+ * 设置页的一组条目：小标题加一张卡片。分组按作用划分，组内条目共用一张卡片，
+ * 避免所有设置挤在同一张长卡片里。
+ */
+@Composable
+internal fun SettingsGroup(
+    title: String,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    androidx.compose.foundation.layout.Column(modifier = Modifier.fillMaxWidth()) {
+        top.yukonga.miuix.kmp.basic.SmallTitle(
+            text = title,
+            insideMargin = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
+        )
+        top.yukonga.miuix.kmp.basic.Card(modifier = Modifier.fillMaxWidth(), content = content)
     }
 }

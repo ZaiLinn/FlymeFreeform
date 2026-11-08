@@ -162,6 +162,11 @@ internal class CornerRadialOverlayView(
     private var centerPreview = false
     private var centerLabel = true
     private var centerSizeDp = ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP
+    /**
+     * 「更多」按钮颜色取自呼出时的最新设置，与中央预览各项一样由协调器直接传入；
+     * 不读 catalog.settings，那份只在目录重新挑选条目时才更新，改色后会停在旧值。
+     */
+    private var moreColor = ModulePreferences.DEFAULT_RADIAL_MORE_COLOR
     private var latestX = 0f
     private var latestY = 0f
     private var selectedIndex: Int? = null
@@ -266,8 +271,10 @@ internal class CornerRadialOverlayView(
         centerPreview: Boolean = false,
         centerLabel: Boolean = true,
         centerSizeDp: Int = ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP,
+        moreColor: Int = ModulePreferences.DEFAULT_RADIAL_MORE_COLOR,
     ) {
         check(!isAttachedToWindow) { "Overlay must be initialized before it is attached" }
+        this.moreColor = ModulePreferences.coerceRadialMoreColor(moreColor)
         this.keepOpen = keepOpen
         this.centerPreview = centerPreview
         this.centerLabel = centerLabel
@@ -841,11 +848,16 @@ internal class CornerRadialOverlayView(
     ) {
         val radius = diameter / 2f
         if (radius <= 0f) return
+        // 用户自定义颜色时底板取纯色，三个点按底板亮度取黑或白；0 跟随系统深浅色。
+        val custom = moreColor.takeIf { it != ModulePreferences.DEFAULT_RADIAL_MORE_COLOR }
+        val plateTop = custom?.let(::Color) ?: colors.morePlateTop
+        val plateBottom = custom?.let(::Color) ?: colors.morePlateBottom
+        val dotColor = custom?.let { Color(MoreButtonColors.dotFor(it)) } ?: colors.moreDot
         // 去掉原实现的径向光晕与描边圈：只保留底板与三点，避免滑到「更多」时多出一层光圈。
         val plate =
             Brush.verticalGradient(
-                0f to colors.morePlateTop,
-                1f to colors.morePlateBottom,
+                0f to plateTop,
+                1f to plateBottom,
                 startY = centerY - radius,
                 endY = centerY + radius,
             )
@@ -878,7 +890,7 @@ internal class CornerRadialOverlayView(
         }
         for (offset in -1..1) {
             drawCircle(
-                color = colors.moreDot,
+                color = dotColor,
                 radius = diameter * MORE_DOT_RADIUS_FRACTION,
                 center = Offset(centerX + offset * diameter * MORE_DOT_SPACING_FRACTION, centerY),
                 alpha = alpha,

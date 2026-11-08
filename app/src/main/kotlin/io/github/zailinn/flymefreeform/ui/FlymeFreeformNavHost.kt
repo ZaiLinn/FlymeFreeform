@@ -62,9 +62,9 @@ internal fun FlymeFreeformNavHost(
     onRadialCenterPreviewChange: (Boolean) -> Unit,
     onRadialCenterLabelChange: (Boolean) -> Unit,
     onRadialCenterSizeChange: (Int) -> Unit,
+    onRadialMoreColorChange: (Int) -> Unit,
     onRadialMaxItemsChange: (Int) -> Unit,
-    onRadialMultiArcEnabledChange: (Boolean) -> Unit,
-    onRadialArcCountChange: (Int) -> Unit,
+    onRadialArcsChange: (Int) -> Unit,
     onRadialFillSourceChange: (Int) -> Unit,
     onIconShapeChange: (Int) -> Unit,
     onRequestScopes: () -> Unit,
@@ -127,8 +127,6 @@ internal fun FlymeFreeformNavHost(
             onZoomLaunchChange = onZoomLaunchChange,
             onOutsideTapCloseModeChange = onOutsideTapCloseModeChange,
             onHandleSwipeUpToMiniEnabledChange = onHandleSwipeUpToMiniEnabledChange,
-            onPauseInLandscapeChange = onPauseInLandscapeChange,
-            onPauseInGameModeChange = onPauseInGameModeChange,
             onNavigateToBlacklist = navigateToBlacklist,
         )
     }
@@ -170,8 +168,7 @@ internal fun FlymeFreeformNavHost(
                 onCornerTriggerRangeChange = onCornerTriggerRangeChange,
                 onRadialHitRangeChange = onRadialHitRangeChange,
                 onRadialMaxItemsChange = onRadialMaxItemsChange,
-                onRadialMultiArcEnabledChange = onRadialMultiArcEnabledChange,
-                onRadialArcCountChange = onRadialArcCountChange,
+                onRadialArcsChange = onRadialArcsChange,
                 onRadialFillSourceChange = onRadialFillSourceChange,
                 onIconShapeChange = onIconShapeChange,
                 onRadialKeepOpenChange = onRadialKeepOpenChange,
@@ -179,6 +176,9 @@ internal fun FlymeFreeformNavHost(
                 onRadialCenterPreviewChange = onRadialCenterPreviewChange,
                 onRadialCenterLabelChange = onRadialCenterLabelChange,
                 onRadialCenterSizeChange = onRadialCenterSizeChange,
+                onRadialMoreColorChange = onRadialMoreColorChange,
+                onPauseInLandscapeChange = onPauseInLandscapeChange,
+                onPauseInGameModeChange = onPauseInGameModeChange,
                 onNavigateToPinnedApps = navigateToPinnedApps,
             )
         }

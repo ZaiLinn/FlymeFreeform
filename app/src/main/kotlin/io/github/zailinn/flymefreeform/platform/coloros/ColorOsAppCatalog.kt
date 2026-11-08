@@ -73,7 +73,10 @@ internal data class AppCatalogSnapshot(
             this.settings.effectiveRadialArcCount == settings.effectiveRadialArcCount &&
             this.settings.innerArcTargets == settings.innerArcTargets &&
             this.settings.radialFillSource == settings.radialFillSource &&
-            this.settings.iconShape == settings.iconShape
+            this.settings.iconShape == settings.iconShape &&
+            // 中央预览开关与尺寸决定是否预取、按多大预取高清图，变化时要重新加载一次目录。
+            this.settings.radialCenterPreview == settings.radialCenterPreview &&
+            this.settings.radialCenterSizeDp == settings.radialCenterSizeDp
 }
 
 /** 「更多」面板按需取图标：回调在图标线程执行；返回的函数用于取消尚未开始的请求。 */
