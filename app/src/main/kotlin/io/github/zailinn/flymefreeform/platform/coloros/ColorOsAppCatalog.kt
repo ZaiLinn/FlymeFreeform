@@ -55,6 +55,8 @@ internal data class AppCatalogSnapshot(
      * 面板只为滚到眼前的格子请求图标，不必等数百个图标全部画完。
      */
     val panelIconLoader: PanelIconLoader? = null,
+    /** 屏幕中央所选应用卡片用的高清图标；只对有桌面入口的应用（含单入口分身）生效。 */
+    val previewIconLoader: PreviewIconLoader? = null,
 ) {
     /**
      * 目录是否需要重算。
@@ -76,6 +78,11 @@ internal data class AppCatalogSnapshot(
 /** 「更多」面板按需取图标：回调在图标线程执行；返回的函数用于取消尚未开始的请求。 */
 internal fun interface PanelIconLoader {
     fun request(target: PinnedTarget, onLoaded: (Bitmap) -> Unit): () -> Unit
+}
+
+/** 按指定边长重新绘制的高清图标：回调在图标线程执行；返回的函数用于取消尚未开始的请求。 */
+internal fun interface PreviewIconLoader {
+    fun request(target: PinnedTarget, sizePx: Int, onLoaded: (Bitmap) -> Unit): () -> Unit
 }
 
 /** 面板图标尚未画好时的占位图；面板见到它就按需请求真图标。 */
@@ -118,6 +125,11 @@ internal class ColorOsAppCatalog(
     // 名称与原始图标也会被面板图标线程读写。
     private val labelCache = ConcurrentHashMap<PinnedTarget, String>()
     private val iconCache = ConcurrentHashMap<PinnedTarget, Bitmap>()
+    /** 中央卡片的高清图标，只留最近 [PREVIEW_CACHE_SIZE] 个（默认大小每个约 0.5 MB，最大约 1.4 MB）。 */
+    private val previewCache =
+        object : LinkedHashMap<PinnedTarget, Bitmap>(PREVIEW_CACHE_SIZE, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PinnedTarget, Bitmap>?): Boolean = size > PREVIEW_CACHE_SIZE
+        }
     private val shapedCache = HashMap<PinnedTarget, Bitmap>()
     private val nativeShapedCache = HashMap<PinnedTarget, Pair<Bitmap, Bitmap>>()
     private var lastPanel: List<RadialEntry> = emptyList()
@@ -166,6 +178,7 @@ internal class ColorOsAppCatalog(
             shapedCache.clear()
             nativeShapedCache.clear()
             iconCache.clear()
+            synchronized(previewCache) { previewCache.clear() }
         }
         val index = currentIndex() ?: return
         if (IconShapes.isSquare(shape)) ensureSquareMask(index)
@@ -219,6 +232,7 @@ internal class ColorOsAppCatalog(
         val radialArcCounts = listOf(outer.size) + inner.map { it.size }
         val radial = radialTargets.mapNotNull { target -> radialEntry(target, index, natives) }
         val iconLoader = PanelIconLoader { target, onLoaded -> requestPanelIcon(target, index, onLoaded) }
+        val previewLoader = PreviewIconLoader { target, size, onLoaded -> requestPreviewIcon(target, index, size, onLoaded) }
         if (radial.size != radialTargets.size) {
             // 个别图标读取失败时不能再按分圈结果摆放，交给扇形按总数重新均分。
             ModuleLog.debug(LOG_TAG) { "SYSTEM_CATALOG_ICON_MISSING_" + (radialTargets.size - radial.size) }
@@ -229,7 +243,7 @@ internal class ColorOsAppCatalog(
         }
         val excluded = radialTargets.toHashSet()
         val counts = if (radial.size == radialTargets.size) radialArcCounts else emptyList()
-        publish(AppCatalogSnapshot(radial, lastPanel.filterNot { it.target in excluded }, settings, counts, iconLoader))
+        publish(AppCatalogSnapshot(radial, lastPanel.filterNot { it.target in excluded }, settings, counts, iconLoader, previewLoader))
         ModuleLog.debug(LOG_TAG) {
             "SYSTEM_CATALOG_RADIAL_" + (SystemClock.uptimeMillis() - startedAt) + "MS_" + radial.size
         }
@@ -243,7 +257,7 @@ internal class ColorOsAppCatalog(
                     if (target !in index.activities) return@mapNotNull null
                     RadialEntry(target, labelOf(target, index), iconCache[target] ?: PanelIconPlaceholder.bitmap)
                 }
-            if (early.isNotEmpty()) publish(AppCatalogSnapshot(radial, early, settings, counts, iconLoader))
+            if (early.isNotEmpty()) publish(AppCatalogSnapshot(radial, early, settings, counts, iconLoader, previewLoader))
         }
         val panelTargets =
             AppSelectionPolicy.panelItems(
@@ -259,7 +273,7 @@ internal class ColorOsAppCatalog(
             }
         val ordered = panelEntries()
         lastPanel = ordered
-        publish(AppCatalogSnapshot(radial, ordered, settings, counts, iconLoader))
+        publish(AppCatalogSnapshot(radial, ordered, settings, counts, iconLoader, previewLoader))
         ModuleLog.debug(LOG_TAG) {
             "SYSTEM_CATALOG_PANEL_ORDER_" + (SystemClock.uptimeMillis() - startedAt) + "MS_" + ordered.size
         }
@@ -276,7 +290,7 @@ internal class ColorOsAppCatalog(
         if (drawn == 0) return
         val panel = panelEntries()
         lastPanel = panel
-        publish(AppCatalogSnapshot(radial, panel, settings, counts, iconLoader))
+        publish(AppCatalogSnapshot(radial, panel, settings, counts, iconLoader, previewLoader))
         ModuleLog.debug(LOG_TAG) {
             "SYSTEM_CATALOG_PANEL_" + (SystemClock.uptimeMillis() - startedAt) + "MS_" + panel.size
         }
@@ -303,6 +317,52 @@ internal class ColorOsAppCatalog(
         return { cancelled.set(true) }
     }
 
+    /**
+     * 中央卡片的高清图标：直接按目标边长绘制系统自适应图标（高密度资源），再按「图标形状」统一，
+     * 不经扇形那份按系统图标尺寸画好的位图放大，避免发糊。没有桌面入口的侧边栏条目不处理。
+     */
+    private fun requestPreviewIcon(
+        target: PinnedTarget,
+        index: AppIndex,
+        sizePx: Int,
+        onLoaded: (Bitmap) -> Unit,
+    ): () -> Unit {
+        if (sizePx <= 0) return {}
+        synchronized(previewCache) { previewCache[target] }?.takeIf { it.width >= sizePx }?.let { cached ->
+            onLoaded(cached)
+            return {}
+        }
+        val info = launcherInfoOf(target, index) ?: return {}
+        val cancelled = AtomicBoolean()
+        panelIconExecutor.execute {
+            if (cancelled.get()) return@execute
+            val icon =
+                try {
+                    val drawable = info.getIcon(android.util.DisplayMetrics.DENSITY_XXXHIGH)
+                    val raw =
+                        createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888).also { bitmap ->
+                            drawable.setBounds(0, 0, sizePx, sizePx)
+                            drawable.draw(Canvas(bitmap))
+                        }
+                    IconShapes.apply(raw, iconShape, isApp = true, squareMask = null)
+                } catch (_: RuntimeException) {
+                    null
+                } ?: return@execute
+            icon.prepareToDraw()
+            synchronized(previewCache) { previewCache[target] = icon }
+            if (!cancelled.get()) onLoaded(icon)
+        }
+        return { cancelled.set(true) }
+    }
+
+    /** 应用的桌面入口；分身仅在包内只有一个入口时复用主用户入口（与扇形塑形同一规则）。 */
+    private fun launcherInfoOf(target: PinnedTarget, index: AppIndex): LauncherActivityInfo? {
+        index.activities[target]?.let { return it }
+        if ((target as? PinnedTarget.Sidebar)?.kind != PinnedTarget.Kind.CloneApp) return null
+        val packageName = sidebarEntries.firstOrNull { it.target == target }?.packageName ?: return null
+        return index.activities.values.filter { it.componentName.packageName == packageName }.singleOrNull()
+    }
+
     private fun dropInvalidatedPackages() {
         if (invalidatedPackages.isEmpty()) return
         val packages = invalidatedPackages.toHashSet()
@@ -311,6 +371,7 @@ internal class ColorOsAppCatalog(
         labelCache.keys.removeAll(::stale)
         iconCache.keys.removeAll(::stale)
         shapedCache.keys.removeAll(::stale)
+        synchronized(previewCache) { previewCache.keys.removeAll(::stale) }
         lastPanel = lastPanel.filterNot { stale(it.target) }
     }
 
@@ -543,6 +604,7 @@ internal class ColorOsAppCatalog(
     }
 
     private companion object {
+        const val PREVIEW_CACHE_SIZE = 4
         const val SQUARE_MASK_CANDIDATES = 30
         const val RECENT_LIMIT = 48
         const val FREQUENT_WINDOW_MS = 7L * 24 * 60 * 60 * 1000

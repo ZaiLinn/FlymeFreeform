@@ -58,6 +58,12 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.AbstractComposeView
@@ -78,6 +84,7 @@ import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.gesture.CornerSide
 import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
 import io.github.zailinn.flymefreeform.gesture.RadialGeometry
+import io.github.zailinn.flymefreeform.gesture.RadialIconScale
 import io.github.zailinn.flymefreeform.gesture.RadialLayout
 import io.github.zailinn.flymefreeform.platform.coloros.AppCatalogSnapshot
 import io.github.zailinn.flymefreeform.platform.coloros.PanelIconPlaceholder
@@ -148,6 +155,10 @@ internal class CornerRadialOverlayView(
     private var radialHitRangeDp = ModulePreferences.DEFAULT_RADIAL_HIT_RANGE_DP
     /** 「永久保持」：松手未选中时保留浮层，并允许直接点选条目。 */
     private var keepOpen = false
+    /** 屏幕中央所选应用卡片与其应用名的开关，随每次呼出从最新设置传入。 */
+    private var centerPreview = false
+    private var centerLabel = true
+    private var centerSizeDp = ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP
     private var latestX = 0f
     private var latestY = 0f
     private var selectedIndex: Int? = null
@@ -159,6 +170,45 @@ internal class CornerRadialOverlayView(
     private var lastTickUptime = 0L
     /** 每格所在的圈，随布局更新；换圈时用更明显的震动。 */
     private var arcOfIndex = IntArray(0)
+    /** 扇形窗口的安全区，屏幕中央卡片以其中心为准。 */
+    private var centerInsets = OverlaySafeInsets()
+    private val previewLabelPaint by lazy {
+        android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = android.graphics.Paint.Align.CENTER
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            color = android.graphics.Color.WHITE
+        }
+    }
+    /** 中央卡片应用名的排版结果，按选中项、图标大小与画布尺寸缓存，避免每帧截断与测量。 */
+    private class CenterLabelLayout(
+        val key: List<Any?>,
+        val text: String?,
+        val width: Float?,
+        val ascent: Float,
+        val descent: Float,
+    )
+    private var centerLabelLayout: CenterLabelLayout? = null
+
+    /** 中央卡片的高清图标（按所选条目请求，见 [PreviewIconLoader]）与其本体放大倍数。 */
+    private val previewImages = mutableStateMapOf<io.github.zailinn.flymefreeform.config.PinnedTarget, Pair<ImageBitmap, Float>>()
+    private val previewRequests = HashMap<io.github.zailinn.flymefreeform.config.PinnedTarget, () -> Unit>()
+
+    /** 为第 [index] 项请求中央卡片的高清图标；已有或已在请求中则跳过。 */
+    private fun requestPreviewImage(index: Int) {
+        val target = catalog.radialApps.getOrNull(index)?.target ?: return
+        if (target in previewImages || target in previewRequests) return
+        val loader = catalog.previewIconLoader ?: return
+        val sizePx = (centerSizeDp * resources.displayMetrics.density * RadialIconScale.MAX_BODY_FILL).roundToInt()
+        previewRequests[target] =
+            loader.request(target, sizePx) { bitmap ->
+                // 留白比例在图标线程算好（逐像素扫描），主线程只接收结果；命中缓存的位图查表即得。
+                val fill = RadialIconScale.bodyFill(iconBodyFraction(bitmap))
+                val image = bitmap.asImageBitmap()
+                post {
+                    if (!disposed) previewImages[target] = image to fill
+                }
+            }
+    }
     private var lastSelectedArc = -1
     private val timeout = Runnable(::requestDismiss)
     private val dismissFallback = Runnable(::completeRadialExit)
@@ -193,9 +243,15 @@ internal class CornerRadialOverlayView(
         y: Float,
         hitRangeDp: Int = ModulePreferences.DEFAULT_RADIAL_HIT_RANGE_DP,
         keepOpen: Boolean = false,
+        centerPreview: Boolean = false,
+        centerLabel: Boolean = true,
+        centerSizeDp: Int = ModulePreferences.DEFAULT_RADIAL_CENTER_SIZE_DP,
     ) {
         check(!isAttachedToWindow) { "Overlay must be initialized before it is attached" }
         this.keepOpen = keepOpen
+        this.centerPreview = centerPreview
+        this.centerLabel = centerLabel
+        this.centerSizeDp = ModulePreferences.coerceRadialCenterSizeDp(centerSizeDp)
         this.side = side
         // 保持挂起不改变命中判定：滑动选格与点选统一使用「命中范围」的设定值。
         this.radialHitRangeDp = ModulePreferences.coerceRadialHitRangeDp(hitRangeDp)
@@ -269,6 +325,8 @@ internal class CornerRadialOverlayView(
     fun disposeOverlay(): Throwable? {
         if (disposed) return null
         disposed = true
+        previewRequests.values.forEach { it() }
+        previewRequests.clear()
         backdropAnimator?.cancel()
         backdropAnimator = null
         removeCallbacks(timeout)
@@ -328,6 +386,40 @@ internal class CornerRadialOverlayView(
                 List(layout.itemCenters.size) { Animatable(0f) }
             }
         val animationsEnabled = remember { ValueAnimator.areAnimatorsEnabled() }
+        // 屏幕中央的所选应用卡片：淡入淡出；换选中项时直接换图并轻弹一下。
+        val previewProgress = remember { Animatable(0f) }
+        val previewPop = remember { Animatable(1f) }
+        val previewIndex = remember { mutableIntStateOf(NO_SELECTION) }
+        LaunchedEffect(selectedIndexState.intValue) {
+            val selected = selectedIndexState.intValue
+            val show =
+                centerPreview && selected != NO_SELECTION && selected < catalog.radialApps.size
+            if (!show) {
+                // 保留上一项，淡出期间仍画它。
+                if (!animationsEnabled) previewProgress.snapTo(0f)
+                else previewProgress.animateTo(0f, tween(CENTER_PREVIEW_FADE_MILLIS))
+                return@LaunchedEffect
+            }
+            val switching = previewIndex.intValue != selected && previewProgress.value > 0.5f
+            previewIndex.intValue = selected
+            requestPreviewImage(selected)
+            if (!animationsEnabled) {
+                previewPop.snapTo(1f)
+                previewProgress.snapTo(1f)
+                return@LaunchedEffect
+            }
+            coroutineScope {
+                launch { previewProgress.animateTo(1f, tween(CENTER_PREVIEW_FADE_MILLIS)) }
+                if (switching) {
+                    launch {
+                        previewPop.snapTo(CENTER_PREVIEW_POP_FROM)
+                        previewPop.animateTo(1f, tween(CENTER_PREVIEW_FADE_MILLIS, easing = LinearOutSlowInEasing))
+                    }
+                } else {
+                    previewPop.snapTo(1f)
+                }
+            }
+        }
 
         val exitRequest = exitRequestState.value
         LaunchedEffect(panelModeState.value, exitRequest, backdropOnlyState.value) {
@@ -440,6 +532,9 @@ internal class CornerRadialOverlayView(
                 exitProgress = exitProgress,
                 itemRings = itemRings,
                 animationsEnabled = animationsEnabled,
+                previewProgress = previewProgress,
+                previewPop = previewPop,
+                previewIndex = previewIndex.intValue,
             )
             if (keepOpen && !panelModeState.value && exitRequest == null) {
                 // 保持显示期间窗口可触摸：点中条目直接启动，点空白处收起。
@@ -503,6 +598,9 @@ internal class CornerRadialOverlayView(
         exitProgress: Animatable<Float, *>,
         itemRings: List<Animatable<Float, *>>,
         animationsEnabled: Boolean,
+        previewProgress: Animatable<Float, *>,
+        previewPop: Animatable<Float, *>,
+        previewIndex: Int,
     ) {
         val itemColors = LocalRadialItemColors.current
         androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
@@ -560,6 +658,78 @@ internal class CornerRadialOverlayView(
                 itemRings = itemRings,
                 colors = itemColors,
             )
+            drawCenterPreview(
+                index = previewIndex,
+                progress = previewProgress.value,
+                pop = previewPop.value,
+                contentAlpha = alpha,
+                colors = itemColors,
+            )
+        }
+    }
+
+    /** 屏幕正中的所选应用卡片；只在设置打开、选中应用（不含「更多」）时出现。 */
+    private fun DrawScope.drawCenterPreview(
+        index: Int,
+        progress: Float,
+        pop: Float,
+        contentAlpha: Float,
+        colors: RadialItemColors,
+    ) {
+        if (progress <= 0f || !centerPreview) return
+        val image = radialImages.value.getOrNull(index) ?: return
+        val alpha = (contentAlpha * progress).coerceIn(0f, 1f)
+        if (alpha <= 0f) return
+        val density = resources.displayMetrics.density
+        val insets = centerInsets
+        val safeWidth = (size.width - insets.left - insets.right).coerceAtLeast(0f)
+        val paint = previewLabelPaint
+        val rawLabel = catalog.radialApps.getOrNull(index)?.label?.takeIf { centerLabel && it.isNotBlank() }
+        val key = listOf(rawLabel, centerSizeDp, safeWidth, resources.configuration.fontScale)
+        val labelLayout =
+            centerLabelLayout?.takeIf { it.key == key } ?: run {
+                paint.textSize =
+                    RadialCenterPreview.labelSp(centerSizeDp.toFloat()) * density * resources.configuration.fontScale
+                val text =
+                    rawLabel?.let {
+                        android.text.TextUtils.ellipsize(
+                            it, paint, safeWidth * RadialCenterPreview.MAX_LABEL_WIDTH_FRACTION, android.text.TextUtils.TruncateAt.END,
+                        ).toString()
+                    }
+                val metrics = paint.fontMetrics
+                CenterLabelLayout(key, text, text?.let(paint::measureText), metrics.ascent, metrics.descent)
+                    .also { centerLabelLayout = it }
+            }
+        val label = labelLayout.text
+        val card =
+            RadialCenterPreview.layout(
+                width = size.width,
+                height = size.height,
+                insets = insets,
+                density = density,
+                labelWidth = labelLayout.width,
+                iconDp = centerSizeDp.toFloat(),
+                labelAscent = labelLayout.ascent,
+                labelDescent = labelLayout.descent,
+            )
+        if (card.iconSize <= 0f) return
+        val scale = (CENTER_PREVIEW_SCALE_FROM + (1f - CENTER_PREVIEW_SCALE_FROM) * progress) * pop
+        val pivot = Offset((card.left + card.right) / 2f, (card.top + card.bottom) / 2f)
+        // 只画图标与应用名，不加底板；高清图标未到时先用扇形那份。
+        val sharp = catalog.radialApps.getOrNull(index)?.target?.let { previewImages[it] }
+        withTransform({ scale(scale, scale, pivot) }) {
+            val iconSize = card.iconSize * (sharp?.second ?: image.bodyFill)
+            drawSystemImage(sharp?.first ?: image.icon, card.iconCenterX, card.iconCenterY, iconSize, alpha)
+            image.badge?.let { badge ->
+                drawBadge(badge, card.iconCenterX, card.iconCenterY, iconSize, alpha, horizontalOffsetFraction = 0f)
+            }
+            val baseline = card.labelBaseline
+            if (label != null && baseline != null) {
+                // 白字加阴影：背后是压暗的屏幕，深浅色下都看得清。
+                paint.alpha = (alpha * 255f).roundToInt().coerceIn(0, 255)
+                paint.setShadowLayer(4f * density, 0f, 1f * density, android.graphics.Color.argb((alpha * 160f).roundToInt().coerceIn(0, 255), 0, 0, 0))
+                drawIntoCanvas { it.nativeCanvas.drawText(label, card.iconCenterX, baseline, paint) }
+            }
         }
     }
 
@@ -581,21 +751,23 @@ internal class CornerRadialOverlayView(
             // 选中项放大：复用每格原有 0→1 的进度动画，1f→1.2f 平滑放大；
             // 不再绘制白色描边外圈（原实现用同一进度画 SELECTION_RING_ALPHA 的圆环）。
             val selectionScale = 1f + SELECTED_ICON_SCALE_GAIN * ringProgress
-            val scale = motion.iconScale * contentScale * selectionScale
+            // 外大内小：内侧圆弧逐圈缩小；应用图标再按留白补偿，本体与「更多」圆盘同大。
+            val arcScale = RadialIconScale.arcScale(arcOfIndex.getOrElse(index) { 0 }, catalog.settings.effectiveRadialArcCount)
+            val scale = motion.iconScale * contentScale * selectionScale * arcScale
             val diameter = metrics.iconDiameter * scale
+            val image = if (index < catalog.radialApps.size) radialImages.value.getOrNull(index) else null
+            val iconSize = diameter * (image?.bodyFill ?: 1f)
             rotate(motion.rotationDegrees, pivot = Offset(centerX, centerY)) {
                 if (index < catalog.radialApps.size) {
-                    radialImages.value.getOrNull(index)?.let { image ->
-                        drawSystemImage(image.icon, centerX, centerY, diameter, contentAlpha)
-                    }
+                    image?.let { drawSystemImage(it.icon, centerX, centerY, iconSize, contentAlpha) }
                 } else {
                     drawMoreItem(centerX, centerY, diameter, contentAlpha, colors)
                 }
                 // 左右扇形的角标分别位于左下角、右下角，避开相邻图标，不参与圆形裁剪。
-                radialImages.value.getOrNull(index)?.let { image ->
+                image?.let { image ->
                     image.badge?.let { badge ->
                         drawBadge(
-                            badge, centerX, centerY, diameter, contentAlpha,
+                            badge, centerX, centerY, iconSize, contentAlpha,
                             horizontalOffsetFraction = if (layout.side == CornerSide.Left) image.badgeLeftOffsetFraction else 0f,
                         )
                     }
@@ -886,6 +1058,7 @@ internal class CornerRadialOverlayView(
     ) {
         if (requestedWidth <= 0 || requestedHeight <= 0 || disposed) return
         val radialInsets = currentRadialInsets()
+        centerInsets = radialInsets
         val safeWidth = (requestedWidth - radialInsets.left - radialInsets.right).coerceAtLeast(1f)
         val safeHeight = (requestedHeight - radialInsets.top - radialInsets.bottom).coerceAtLeast(1f)
         val systemIconDiameter = systemIconSize()
@@ -929,7 +1102,10 @@ internal class CornerRadialOverlayView(
                 itemCount = outerSlotCount,
                 innerArcCounts = arcItemCounts.drop(1),
                 arcSpacing = metrics.radial.arcSpacing,
-                iconDiameter = metrics.radial.iconDiameter,
+                // 角落空白区按最内一圈缩小后的图标计。
+                iconDiameter =
+                    metrics.radial.iconDiameter *
+                        RadialIconScale.arcScale(arcItemCounts.indexOfLast { it > 0 }, arcCount),
             )
         if (!panelModeState.value && !dismissing) updateGestureFromLatestPoint()
     }
@@ -1086,6 +1262,11 @@ internal class CornerRadialOverlayView(
         postDelayed(timeout, PANEL_TIMEOUT_MS)
     }
 
+    /** 内置「更多」面板打开时收起（回桌面、手势上滑时由协调器调用）；其他状态不处理。 */
+    fun dismissPanel() {
+        if (panelModeState.value) requestDismiss()
+    }
+
     private fun requestDismiss() {
         if (dismissNotified || disposed) return
         dismissNotified = true
@@ -1169,6 +1350,10 @@ internal class CornerRadialOverlayView(
                 itemCenters = emptyList(),
             )
         const val NO_SELECTION = -1
+        const val CENTER_PREVIEW_FADE_MILLIS = 120
+        /** 卡片入场从该比例放大到 1；换选中项时从 [CENTER_PREVIEW_POP_FROM] 弹回 1。 */
+        const val CENTER_PREVIEW_SCALE_FROM = 0.9f
+        const val CENTER_PREVIEW_POP_FROM = 0.94f
         /** 选中项放大幅度：1f → 1.2f，与每格 0→1 的进度动画相乘。 */
         const val SELECTED_ICON_SCALE_GAIN = 0.2f
         const val PANEL_SURFACE_ALPHA = 253f / 255f
@@ -1226,4 +1411,27 @@ private class RadialImage(entry: RadialEntry) {
     val icon: ImageBitmap = entry.icon.asImageBitmap()
     val badge: ImageBitmap? = entry.badge?.asImageBitmap()
     val badgeLeftOffsetFraction: Float = entry.badgeLeftOffsetFraction
+    /** 绘制时的放大倍数，使不透明本体铺满图标直径（见 [RadialIconScale.bodyFill]）。 */
+    val bodyFill: Float = RadialIconScale.bodyFill(iconBodyFraction(entry.icon))
 }
+
+/** 不透明本体包围盒的长边占位图长边的比例；同一位图只算一次。 */
+private val iconBodyFractions = java.util.WeakHashMap<android.graphics.Bitmap, Float>()
+
+private fun iconBodyFraction(bitmap: android.graphics.Bitmap): Float =
+            synchronized(iconBodyFractions) {
+                iconBodyFractions.getOrPut(bitmap) {
+                    val width = bitmap.width
+                    val height = bitmap.height
+                    if (width <= 0 || height <= 0) return@getOrPut 1f
+                    val pixels = IntArray(width * height)
+                    runCatching { bitmap.getPixels(pixels, 0, width, 0, 0, width, height) }
+                        .onFailure { return@getOrPut 1f }
+                    val bounds =
+                        io.github.zailinn.flymefreeform.apps.IconShapes.opaqueBounds(width, height) { x, y ->
+                            pixels[y * width + x] ushr 24
+                        } ?: return@getOrPut 1f
+                    val body = maxOf(bounds[2] - bounds[0] + 1, bounds[3] - bounds[1] + 1)
+                    body.toFloat() / maxOf(width, height)
+                }
+            }

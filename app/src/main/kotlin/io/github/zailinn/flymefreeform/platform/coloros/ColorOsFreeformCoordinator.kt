@@ -155,6 +155,7 @@ internal class ColorOsFreeformCoordinator(
             environmentState.observeForeground { packageName -> handler.post { onForegroundChanged(packageName) } }
             registerPackageObserver()
             registerPinnedTargetsObserver()
+            registerSystemDialogsObserver()
             configuration.observe {
                 handler.post { applySettings(configuration.snapshot) }
             }
@@ -182,6 +183,29 @@ internal class ColorOsFreeformCoordinator(
             context.registerReceiver(packageReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } catch (exception: RuntimeException) {
             logger(Log.WARN, "PACKAGE_OBSERVER_UNAVAILABLE", exception)
+        }
+    }
+
+    /** 回桌面（homekey）或手势上滑（recentapps）时收起内置「更多」面板；侧边栏面板由其窗口自行处理。 */
+    private val systemDialogsReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != Intent.ACTION_CLOSE_SYSTEM_DIALOGS) return
+                val reason = intent.getStringExtra("reason")
+                if (reason != "homekey" && reason != "recentapps") return
+                handler.post {
+                    if (!morePanelActive) return@post
+                    debug("SYSTEM_MORE_PANEL_CLOSE_" + reason)
+                    overlay?.dismissPanel()
+                }
+            }
+        }
+
+    private fun registerSystemDialogsObserver() {
+        try {
+            context.registerReceiver(systemDialogsReceiver, IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS), Context.RECEIVER_EXPORTED)
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "SYSTEM_DIALOGS_OBSERVER_UNAVAILABLE", exception)
         }
     }
 
@@ -500,6 +524,9 @@ internal class ColorOsFreeformCoordinator(
                 y = y,
                 hitRangeDp = hitRangeDp,
                 keepOpen = keepOpen,
+                centerPreview = lastSettings.radialCenterPreview,
+                centerLabel = lastSettings.radialCenterLabel,
+                centerSizeDp = lastSettings.radialCenterSizeDp,
             )
             overlay = view
             try {

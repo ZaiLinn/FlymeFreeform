@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import io.github.zailinn.flymefreeform.gesture.CornerSide
 import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
 import io.github.zailinn.flymefreeform.gesture.RadialGeometry
+import io.github.zailinn.flymefreeform.gesture.RadialIconScale
 import io.github.zailinn.flymefreeform.BuildConfig
 import io.github.zailinn.flymefreeform.R
 import io.github.zailinn.flymefreeform.config.OutsideTapCloseMode
@@ -448,9 +449,10 @@ internal fun HitRangePreview(
                     itemCount = arcItemCounts.first() + 1,
                     innerArcCounts = arcItemCounts.drop(1),
                     arcSpacing = arcSpacing,
-                    iconDiameter = iconRadius * 2f,
+                    iconDiameter = iconRadius * 2f * RadialIconScale.arcScale(arcItemCounts.indexOfLast { it > 0 }, arcCount),
                 )
-            layout.itemCenters.forEach { point ->
+            val arcOfIndex = RadialArcPlan.arcOfIndex(arcItemCounts)
+            layout.itemCenters.forEachIndexed { index, point ->
                 val center = Offset(point.x, point.y)
                 drawCircle(
                     color = color.copy(alpha = if (enabled) 0.10f else 0.04f),
@@ -465,7 +467,7 @@ internal fun HitRangePreview(
                 )
                 drawCircle(
                     color = color.copy(alpha = if (enabled) 0.85f else 0.30f),
-                    radius = iconRadius,
+                    radius = iconRadius * RadialIconScale.arcScale(arcOfIndex.getOrElse(index) { 0 }, arcCount),
                     center = center,
                 )
             }
