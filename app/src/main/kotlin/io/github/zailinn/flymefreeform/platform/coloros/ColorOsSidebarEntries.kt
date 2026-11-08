@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.LauncherActivityInfo
 import android.content.pm.LauncherApps
+import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -73,7 +74,8 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
             target,
             title.take(160),
             packageName.take(256),
-            icon(bean, target, packageName, cloneInfo),
+            // 图标资源读不到的工具是其他模块注入的（如 LuckyTool 的「Run in background」），不进挑选列表。
+            icon(bean, target, packageName, cloneInfo) ?: return@mapNotNull null,
             cloneInfo?.let(::cloneBadge),
         )
     }.distinctBy(SelectableEntry::target).also { require(it.size <= SidebarEntryProtocol.MAX_ENTRIES) }
@@ -118,11 +120,12 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
         return result.takeIf { PinnedTargetCodec.decode(PinnedTargetCodec.encode(it)) == it }
     }
 
-    private fun icon(bean: Any, target: PinnedTarget.Sidebar, packageName: String, cloneInfo: LauncherActivityInfo?): Bitmap {
+    /** 返回 null 表示工具声明了图标资源但读不到，调用方据此排除该条目。 */
+    private fun icon(bean: Any, target: PinnedTarget.Sidebar, packageName: String, cloneInfo: LauncherActivityInfo?): Bitmap? {
         val drawable: Drawable? = when (target.kind) {
             PinnedTarget.Kind.Tool -> {
                 val id = iconRes.call(bean) as Int
-                if (id == 0) null else context.getDrawable(id)
+                if (id == 0) null else toolIcon(id, packageName) ?: return null
             }
             // 角标单独生成，避免圆形图标裁剪时切掉右下角。
             PinnedTarget.Kind.CloneApp -> try {
@@ -153,6 +156,22 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
             context.packageManager.defaultActivityIcon
         }
         return source.toIconBitmap()
+    }
+
+    /**
+     * 工具图标的资源号不一定属于侧边栏自身（例如其他模块注入的工具），侧边栏 context 读不到时
+     * 改从工具所属应用的资源读取；仍读不到返回 null，由调用方排除该工具。
+     * 单个图标失败不得让整个目录失败。
+     */
+    private fun toolIcon(id: Int, packageName: String): Drawable? = try {
+        context.getDrawable(id)
+    } catch (_: Resources.NotFoundException) {
+        try {
+            packageName.takeIf { it.isNotEmpty() && it != context.packageName }
+                ?.let { context.packageManager.getResourcesForApplication(it).getDrawable(id, null) }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** 让系统在透明底图上绘制分身用户角标，位置与比例沿用系统徽标规则。 */
