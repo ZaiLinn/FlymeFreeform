@@ -75,6 +75,7 @@ class ModuleMain : XposedModule() {
                     "_zapp" + settings.zoomAllowAnyApp +
                     "_zlaunch" + settings.zoomLaunch +
                     "_keep" + settings.radialKeepOpen +
+                    "_arcs" + settings.effectiveRadialArcCount +
                     "_tap" + settings.outsideTapCloseMode.storedValue +
                     "_vlog" + settings.verboseLogEnabled +
                     "_pins" + settings.pinnedTargets.size +

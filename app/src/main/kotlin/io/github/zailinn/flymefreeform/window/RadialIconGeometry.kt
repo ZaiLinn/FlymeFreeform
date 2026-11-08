@@ -1,5 +1,7 @@
 package io.github.zailinn.flymefreeform.window
 
+import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
+
 /** 扇形与图标共享屏幕比例；条目数量只改变角度，不改变半径。 */
 internal object RadialIconGeometry {
     private const val BASE_SHORT_EDGE_DP = 400f
@@ -30,6 +32,7 @@ internal object RadialIconGeometry {
         safeInsets: OverlaySafeInsets,
         itemCount: Int,
         hitRadiusDp: Float? = null,
+        arcCount: Int = 1,
     ): RadialVisualMetrics {
         require(width.isFinite() && width > 0f && height.isFinite() && height > 0f)
         require(density.isFinite() && density > 0f)
@@ -54,6 +57,9 @@ internal object RadialIconGeometry {
                 diameter * SELECTION_ENTER_FACTOR
             }
         val keepRadius = SELECTION_KEEP_RADIUS_PX
+        // 内侧圆弧都在默认圆弧以内，外缘预算不变；间距与图标同比例缩放。
+        val arcSpacing =
+            RadialArcPlan.arcSpacingDp(arcCount, BASE_RADIUS_DP, BASE_ICON_DIAMETER_DP) * unit
         return RadialVisualMetrics(
             radius = radius,
             plateDiameter = diameter,
@@ -62,6 +68,7 @@ internal object RadialIconGeometry {
             selectionKeepRadius = keepRadius,
             itemPadding = BASE_ITEM_PADDING_DP * unit,
             pixelsPerBaseDp = unit,
+            arcSpacing = arcSpacing,
         )
     }
 }

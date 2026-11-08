@@ -22,6 +22,7 @@ internal class ModuleEnvironmentState(
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val observers = CopyOnWriteArraySet<() -> Unit>()
+    private val foregroundObservers = CopyOnWriteArraySet<(String?) -> Unit>()
     private var context: Context? = null
     private var displays: DisplayManager? = null
     private var keyguard: KeyguardManager? = null
@@ -113,6 +114,7 @@ internal class ModuleEnvironmentState(
         monitoring = false
         releaseObservers()
         observers.clear()
+        foregroundObservers.clear()
         handler.removeCallbacksAndMessages(null)
         context = null
         displays = null
@@ -152,10 +154,22 @@ internal class ModuleEnvironmentState(
         return isModuleAllowed() && gestureNavigation && !keyguardLocked
     }
 
-    /** 记录当前前台应用，供排除列表判定使用。仅在 system_server 内更新。 */
+    /** 记录当前前台应用，供排除列表判定与扇形补位使用。仅在 system_server 内更新。 */
     fun updateForeground(packageName: String?) {
+        if (foregroundPackage == packageName) return
         foregroundPackage = packageName
+        // 调用方处在 ActivityTaskManager 的锁内：观察者只能投递任务，不得在回调里做实际工作。
+        foregroundObservers.forEach { observer ->
+            try {
+                observer(packageName)
+            } catch (exception: RuntimeException) {
+                reportFailure("FOREGROUND_OBSERVER_FAILED", exception)
+            }
+        }
     }
+
+    /** 前台应用变化时回调（在调用 [updateForeground] 的线程上，回调内只能投递）。 */
+    fun observeForeground(observer: (String?) -> Unit) { foregroundObservers += observer }
 
     /**
      * 指定包是否在排除列表内。

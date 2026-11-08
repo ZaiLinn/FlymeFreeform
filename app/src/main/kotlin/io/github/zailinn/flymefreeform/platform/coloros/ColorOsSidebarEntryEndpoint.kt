@@ -60,6 +60,10 @@ internal class ColorOsSidebarEntryEndpoint(
                         configuration.snapshot.pinsSaved,
                     ),
                     pinnedTargets = PinnedTargetCodec.decodeList(encoded),
+                    innerArcTargets =
+                        io.github.zailinn.flymefreeform.config.ModuleSettingsSnapshot.decodeInnerArcTargets(
+                            intent.getStringArrayListExtra(ModulePreferences.EXTRA_INNER_ARC_TARGETS),
+                        ) ?: configuration.snapshot.innerArcTargets,
                 ),
             )
         }
@@ -195,7 +199,7 @@ internal class ColorOsSidebarEntryEndpoint(
 
     private fun launchAllowed(target: PinnedTarget.Sidebar): Boolean = allowed() &&
         target.userId == (Process.myUid() / 100_000) && configuration.snapshot.enabled &&
-        target in configuration.snapshot.pinnedTargets
+        target in configuration.snapshot.allPinnedTargets
 
     private fun execute(request: Request, action: () -> Unit) {
         try {

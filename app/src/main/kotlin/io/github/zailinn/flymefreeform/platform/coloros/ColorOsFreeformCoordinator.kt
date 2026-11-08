@@ -89,9 +89,11 @@ internal class ColorOsFreeformCoordinator(
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 entryCatalog.invalidate()
+                // 只丢弃这个包的名称与图标缓存，其余应用不必重画。
+                appCatalog.invalidatePackage(intent?.data?.schemeSpecificPart)
                 if (lastSettings.enabled) {
                     appCatalog.refresh(lastSettings)
-                    if (lastSettings.pinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
+                    if (lastSettings.allPinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
                 }
             }
         }
@@ -114,6 +116,10 @@ internal class ColorOsFreeformCoordinator(
                             configuration.snapshot.pinsSaved,
                         ),
                         pinnedTargets = targets,
+                        innerArcTargets =
+                            ModuleSettingsSnapshot.decodeInnerArcTargets(
+                                intent.getStringArrayListExtra(ModulePreferences.EXTRA_INNER_ARC_TARGETS),
+                            ) ?: configuration.snapshot.innerArcTargets,
                     ),
                 )
             }
@@ -146,6 +152,7 @@ internal class ColorOsFreeformCoordinator(
             entryCatalog.start()
             environmentState.start(context)
             environmentState.observe { applySettings(configuration.snapshot) }
+            environmentState.observeForeground { packageName -> handler.post { onForegroundChanged(packageName) } }
             registerPackageObserver()
             registerPinnedTargetsObserver()
             configuration.observe {
@@ -153,6 +160,12 @@ internal class ColorOsFreeformCoordinator(
             }
         }
         logger(Log.INFO, "SYSTEM_GESTURE_COORDINATOR_READY", null)
+    }
+
+    /** 前台应用变了：补位不该再放正在用的应用（用小窗再开自己没有意义），让目录按新的前台重挑一次。 */
+    private fun onForegroundChanged(packageName: String?) {
+        appCatalog.updateForeground(packageName)
+        if (pointerRegistered && lastSettings.enabled) appCatalog.refresh(lastSettings)
     }
 
     private fun registerPackageObserver() {
@@ -196,14 +209,16 @@ internal class ColorOsFreeformCoordinator(
     private fun applySettings(settings: ModuleSettingsSnapshot) {
         val selectionChanged =
             settings.pinsSaved != lastSettings.pinsSaved ||
-                settings.pinnedTargets != lastSettings.pinnedTargets
+                settings.pinnedTargets != lastSettings.pinnedTargets ||
+                settings.innerArcTargets != lastSettings.innerArcTargets
         lastSettings = settings
         if (environmentState.isGestureAllowed(refreshKeyguard = true) && (settings.leftCornerEnabled || settings.rightCornerEnabled)) {
             val resuming = !pointerRegistered
-            if ((resuming || selectionChanged) && settings.pinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
+            if ((resuming || selectionChanged) && settings.allPinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
             registerPointerListener()
             if (resuming || selectionChanged || !catalogSnapshot.matches(settings) || catalogSnapshot.radialApps.isEmpty()) {
-                appCatalog.refresh(settings, reloadApps = resuming || selectionChanged || catalogSnapshot.radialApps.isEmpty())
+                // 增减固定项只需重新挑选条目，不必重读应用列表；目录内部按条目缓存图标。
+                appCatalog.refresh(settings, reloadApps = resuming || catalogSnapshot.radialApps.isEmpty())
             }
         } else {
             sidebar.cancel()
@@ -581,7 +596,7 @@ internal class ColorOsFreeformCoordinator(
                         entryCatalog.launch(target) {
                             generation == entryLaunchGeneration &&
                                 (!requiresHiddenOverlay || overlay == null) && isGestureEnvironmentAllowed() &&
-                                target in lastSettings.pinnedTargets && focusedWindow() === focus &&
+                                target in lastSettings.allPinnedTargets && focusedWindow() === focus &&
                                 context.getSystemService(android.hardware.display.DisplayManager::class.java)
                                     .getDisplay(Display.DEFAULT_DISPLAY)?.rotation == rotation
                         }

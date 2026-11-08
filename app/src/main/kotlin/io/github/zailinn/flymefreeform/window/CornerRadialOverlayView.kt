@@ -35,9 +35,11 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -74,9 +76,11 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.gesture.CornerSide
+import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
 import io.github.zailinn.flymefreeform.gesture.RadialGeometry
 import io.github.zailinn.flymefreeform.gesture.RadialLayout
 import io.github.zailinn.flymefreeform.platform.coloros.AppCatalogSnapshot
+import io.github.zailinn.flymefreeform.platform.coloros.PanelIconPlaceholder
 import io.github.zailinn.flymefreeform.platform.coloros.RadialEntry
 import io.github.zailinn.flymefreeform.ui.theme.CornerOverlayTheme
 import io.github.zailinn.flymefreeform.ui.theme.LocalRadialItemColors
@@ -103,6 +107,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 立即移除并通过两帧等待保证屏幕干净，因此不需要在此区分目标类型。
  *
  * 格数 = 应用数 + 1，最后一格固定是「更多」面板入口，不参与应用列表索引。
+ * 多圆弧时应用依次分布在默认圆弧与内侧圆弧上（见 [RadialArcPlan]），下标顺序不变。
  */
 internal class CornerRadialOverlayView(
     context: Context,
@@ -137,7 +142,8 @@ internal class CornerRadialOverlayView(
     private var catalog = AppCatalogSnapshot()
     private val radialClipPath = Path()
     private val radialImages = mutableStateOf<List<RadialImage>>(emptyList())
-    private var panelImages: Map<io.github.zailinn.flymefreeform.config.PinnedTarget, ImageBitmap> = emptyMap()
+    /** 面板图标：开场时已画好的直接放入，其余由格子出现在视野里时按需请求（见 AppCatalogSnapshot.panelIconLoader）。 */
+    private val panelImages = mutableStateMapOf<io.github.zailinn.flymefreeform.config.PinnedTarget, ImageBitmap>()
     private var side = CornerSide.Right
     private var radialHitRangeDp = ModulePreferences.DEFAULT_RADIAL_HIT_RANGE_DP
     /** 「永久保持」：松手未选中时保留浮层，并允许直接点选条目。 */
@@ -151,6 +157,9 @@ internal class CornerRadialOverlayView(
     private var commitNotified = false
     private var disposed = false
     private var lastTickUptime = 0L
+    /** 每格所在的圈，随布局更新；换圈时用更明显的震动。 */
+    private var arcOfIndex = IntArray(0)
+    private var lastSelectedArc = -1
     private val timeout = Runnable(::requestDismiss)
     private val dismissFallback = Runnable(::completeRadialExit)
 
@@ -194,9 +203,13 @@ internal class CornerRadialOverlayView(
         latestX = x
         latestY = y
         radialImages.value = catalog.radialApps.map(::RadialImage)
-        panelImages = catalog.panelApps.associate { entry -> entry.target to entry.icon.asImageBitmap() }
+        panelImages.clear()
+        catalog.panelApps.forEach { entry ->
+            if (!PanelIconPlaceholder.isPlaceholder(entry.icon)) panelImages[entry.target] = entry.icon.asImageBitmap()
+        }
         selectedIndex = null
         selectedIndexState.intValue = NO_SELECTION
+        lastSelectedArc = -1
         handoffEntryProgress.floatValue = 0f
         handoffLayoutState.value = EMPTY_LAYOUT
         handoffMetricsState.value = null
@@ -764,13 +777,26 @@ internal class CornerRadialOverlayView(
                                 },
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        panelImages[entry.target]?.let { image ->
+                        val image = panelImages[entry.target]
+                        if (image != null) {
                             Image(
                                 bitmap = image,
                                 contentDescription = null,
                                 modifier = Modifier.size(iconSize),
                                 filterQuality = FilterQuality.High,
                             )
+                        } else {
+                            // 图标未画好时留出同样大小的空位，名称不跳动；格子在视野里才请求。
+                            Spacer(modifier = Modifier.size(iconSize))
+                            DisposableEffect(entry.target) {
+                                val cancel =
+                                    catalog.panelIconLoader?.request(entry.target) { bitmap ->
+                                        post {
+                                            if (!disposed) panelImages[entry.target] = bitmap.asImageBitmap()
+                                        }
+                                    }
+                                onDispose { cancel?.invoke() }
+                            }
                         }
                         Spacer(modifier = Modifier.height(labelGap))
                         Text(
@@ -863,6 +889,19 @@ internal class CornerRadialOverlayView(
         val safeWidth = (requestedWidth - radialInsets.left - radialInsets.right).coerceAtLeast(1f)
         val safeHeight = (requestedHeight - radialInsets.top - radialInsets.bottom).coerceAtLeast(1f)
         val systemIconDiameter = systemIconSize()
+        val arcCount = catalog.settings.effectiveRadialArcCount
+        // 各圈条数以目录给出的为准：自定义的内侧圆弧可能放不满，不能按总数重新均分。
+        // 目录未带分圈信息时（旧快照）才按容量顺序分配。
+        val arcItemCounts =
+            catalog.radialArcCounts.takeIf { counts ->
+                counts.isNotEmpty() && counts.sum() == catalog.radialApps.size
+            } ?: RadialArcPlan.distribute(
+                itemCount = catalog.radialApps.size,
+                outerLimit = catalog.settings.radialMaxItems,
+                arcCount = arcCount,
+            )
+        val outerSlotCount = arcItemCounts.first() + 1
+        arcOfIndex = RadialArcPlan.arcOfIndex(arcItemCounts)
         val metrics =
             AdaptiveOverlayGeometry.calculate(
                 width = requestedWidth.toFloat(),
@@ -870,8 +909,9 @@ internal class CornerRadialOverlayView(
                 safeInsets = safeInsets,
                 systemIconSize = systemIconDiameter,
                 density = resources.displayMetrics.density,
-                radialItemCount = catalog.radialApps.size + 1,
+                radialItemCount = outerSlotCount,
                 radialHitRangeDp = radialHitRangeDp.toFloat(),
+                radialArcCount = arcCount,
                 radialInsets = radialInsets,
                 fontScale = resources.configuration.fontScale,
                 panelItemCount = catalog.panelApps.size,
@@ -886,7 +926,10 @@ internal class CornerRadialOverlayView(
                 offsetX = radialInsets.left,
                 offsetY = radialInsets.top,
                 radius = metrics.radial.radius,
-                itemCount = catalog.radialApps.size + 1,
+                itemCount = outerSlotCount,
+                innerArcCounts = arcItemCounts.drop(1),
+                arcSpacing = metrics.radial.arcSpacing,
+                iconDiameter = metrics.radial.iconDiameter,
             )
         if (!panelModeState.value && !dismissing) updateGestureFromLatestPoint()
     }
@@ -919,9 +962,18 @@ internal class CornerRadialOverlayView(
         selectedIndex = next
         selectedIndexState.intValue = next ?: NO_SELECTION
         val now = SystemClock.uptimeMillis()
-        if (next != null && now - lastTickUptime >= TICK_INTERVAL_MS) {
-            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-            lastTickUptime = now
+        if (next != null) {
+            // 跨圈换格用「越过阈值」的震动，不看屏幕也能分辨进了哪一圈；同圈换格仍是节流的轻 tick。
+            val arc = arcOfIndex.getOrElse(next) { 0 }
+            val crossedArc = lastSelectedArc >= 0 && arc != lastSelectedArc
+            lastSelectedArc = arc
+            if (crossedArc) {
+                performHapticFeedback(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE)
+                lastTickUptime = now
+            } else if (now - lastTickUptime >= TICK_INTERVAL_MS) {
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                lastTickUptime = now
+            }
         }
     }
 

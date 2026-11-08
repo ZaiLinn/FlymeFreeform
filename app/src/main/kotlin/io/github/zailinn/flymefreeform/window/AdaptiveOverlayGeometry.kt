@@ -33,6 +33,8 @@ internal data class RadialVisualMetrics(
     val selectionKeepRadius: Float,
     val itemPadding: Float,
     val pixelsPerBaseDp: Float,
+    /** 相邻两条圆弧的半径差；单圆弧时为 0。 */
+    val arcSpacing: Float = 0f,
 )
 
 internal data class PanelVisualMetrics(
@@ -78,6 +80,7 @@ internal object AdaptiveOverlayGeometry {
         density: Float,
         radialItemCount: Int,
         radialHitRangeDp: Float? = null,
+        radialArcCount: Int = 1,
         radialInsets: OverlaySafeInsets = safeInsets,
         fontScale: Float,
         panelItemCount: Int,
@@ -103,6 +106,7 @@ internal object AdaptiveOverlayGeometry {
                 safeInsets = radialInsets,
                 itemCount = radialItemCount,
                 hitRadiusDp = radialHitRangeDp,
+                arcCount = radialArcCount,
             )
 
         val outerMargin = plateDiameter * OUTER_MARGIN_FRACTION
