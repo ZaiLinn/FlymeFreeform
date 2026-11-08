@@ -149,7 +149,6 @@ internal class CornerRadialOverlayView(
     private val handoffMetricsState = mutableStateOf<RadialVisualMetrics?>(null)
     private var appliedWindowInsets: WindowInsets? = null
     private var catalog = AppCatalogSnapshot()
-    private val radialClipPath = Path()
     private val radialImages = mutableStateOf<List<RadialImage>>(emptyList())
     /** 方形图标时「更多」底板的外形模板（取自扇形里的应用图标）；圆形或取不到时为 null。 */
     private val morePlateMask = mutableStateOf<ImageBitmap?>(null)
@@ -195,6 +194,7 @@ internal class CornerRadialOverlayView(
 
     /** 中央卡片的高清图标（按所选条目请求，见 [PreviewIconLoader]）与其本体放大倍数。 */
     private val previewImages = mutableStateMapOf<io.github.zailinn.flymefreeform.config.PinnedTarget, Pair<ImageBitmap, Float>>()
+    private var previewGeneration = 0L
     private val previewRequests = HashMap<io.github.zailinn.flymefreeform.config.PinnedTarget, () -> Unit>()
 
     /** 为第 [index] 项请求中央卡片的高清图标；已有或已在请求中则跳过。 */
@@ -202,14 +202,20 @@ internal class CornerRadialOverlayView(
         val target = catalog.radialApps.getOrNull(index)?.target ?: return
         if (target in previewImages || target in previewRequests) return
         val loader = catalog.previewIconLoader ?: return
-        val sizePx = (centerSizeDp * resources.displayMetrics.density * RadialIconScale.MAX_BODY_FILL).roundToInt()
+        val generation = previewGeneration
+        val sizePx = PreviewIconSizing.renderSize(centerSizeDp * resources.displayMetrics.density * RadialIconScale.MAX_BODY_FILL)
         previewRequests[target] =
             loader.request(target, sizePx) { bitmap ->
                 // 留白比例在图标线程算好（逐像素扫描），主线程只接收结果；命中缓存的位图查表即得。
                 val fill = RadialIconScale.bodyFill(iconBodyFraction(bitmap))
                 val image = bitmap.asImageBitmap()
                 post {
-                    if (!disposed) previewImages[target] = image to fill
+                    if (!disposed && generation == previewGeneration) {
+                        previewRequests.remove(target)
+                        previewImages.remove(target)
+                        previewImages[target] = image to fill
+                        while (previewImages.size > 4) previewImages.keys.firstOrNull { it != target }?.let(previewImages::remove)
+                    }
                 }
             }
     }
@@ -261,6 +267,11 @@ internal class CornerRadialOverlayView(
         // 保持挂起不改变命中判定：滑动选格与点选统一使用「命中范围」的设定值。
         this.radialHitRangeDp = ModulePreferences.coerceRadialHitRangeDp(hitRangeDp)
         this.catalog = catalog
+        previewGeneration++
+        previewRequests.values.forEach { it() }
+        previewRequests.clear()
+        previewImages.clear()
+        if (centerPreview) catalog.radialApps.take(3).indices.forEach(::requestPreviewImage)
         latestX = x
         latestY = y
         radialImages.value = catalog.radialApps.map(::RadialImage)
@@ -877,21 +888,18 @@ internal class CornerRadialOverlayView(
         val drawWidth = if (aspectRatio >= 1f) size else size * aspectRatio
         val drawHeight = if (aspectRatio >= 1f) size / aspectRatio else size
         val destinationSize = IntSize(drawWidth.roundToInt().coerceAtLeast(1), drawHeight.roundToInt().coerceAtLeast(1))
-        radialClipPath.rewind()
-        radialClipPath.addOval(Rect(centerX - size / 2f, centerY - size / 2f, centerX + size / 2f, centerY + size / 2f))
-        clipPath(radialClipPath) {
-            drawImage(
-                image = image,
-                dstOffset =
-                    IntOffset(
-                        (centerX - destinationSize.width / 2f).roundToInt(),
-                        (centerY - destinationSize.height / 2f).roundToInt(),
-                    ),
-                dstSize = destinationSize,
-                alpha = alpha,
-                filterQuality = FilterQuality.High,
-            )
-        }
+        // 位图已经按 IconShapes 塑形，按原 alpha 绘制，保留方形的四角。
+        drawImage(
+            image = image,
+            dstOffset =
+                IntOffset(
+                    (centerX - destinationSize.width / 2f).roundToInt(),
+                    (centerY - destinationSize.height / 2f).roundToInt(),
+                ),
+            dstSize = destinationSize,
+            alpha = alpha,
+            filterQuality = FilterQuality.High,
+        )
     }
 
     @Composable

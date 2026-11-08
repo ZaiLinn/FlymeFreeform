@@ -152,6 +152,12 @@ internal class ColorOsAllAppsContent(
         )
         // 每次打开都强制重算：最近组要反映刚用过的应用，不能吃 15s 缓存；
         // 先用上一份结果立刻上屏，算完再原地回写新顺序。
+        boundAdapter?.takeIf { it !== adapter }?.let(FavoriteGroupInjector::detach)
+        boundAdapter = adapter
+        FavoriteGroupInjector.attach(adapter,
+            allowed = { !closed && boundAdapter === adapter && rewriteList() && currentQuery().isEmpty() &&
+                (getData.call(search) as? List<*>)?.any { it?.javaClass?.simpleName == "TitleLabelData" } == true },
+            ready = ::onNativeListWritten)
         if (rewriteList()) {
             FavoriteGroupInjector.prepareAsync(context, adapter.javaClass.classLoader, force = true)
             FavoriteGroupInjector.apply(adapter, context)
@@ -712,6 +718,7 @@ internal class ColorOsAllAppsContent(
     fun close() {
         if (closed) return
         closed = true
+        boundAdapter?.let(FavoriteGroupInjector::detach)
         boundAdapter = null
         try {
             if (view.isNotEmpty()) {

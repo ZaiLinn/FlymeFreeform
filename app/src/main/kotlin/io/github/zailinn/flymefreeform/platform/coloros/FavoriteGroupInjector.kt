@@ -129,8 +129,8 @@ internal object FavoriteGroupInjector {
                     d { "prepareAsync done size=" + rows.size +
                             " cost=" + (System.currentTimeMillis() - requestedAt) + "ms" }
                     // 面板已经打开的话，算完就地回写，用户不用关掉再开才能看到新顺序。
-                    val adapter = appliedAdapter?.get()
-                    if (adapter != null) mainHandler.post { apply(adapter, ctx, notify = true) }
+                    val completion = writeback.completion()
+                    mainHandler.post { completion() }
                 } else {
                     d { "prepareAsync: buildRows 返回 null" }
                 }
@@ -179,7 +179,9 @@ internal object FavoriteGroupInjector {
 
     /** 兜底：直接改写 adapter 的 mData 并通知刷新（会有一次重建）。 */
     /** 最近一次注入过的 adapter，用于“算完就地回写”。 */
-    private var appliedAdapter: java.lang.ref.WeakReference<Any>? = null
+    private val writeback = PanelWriteback()
+    fun attach(adapter: Any, allowed: () -> Boolean, ready: () -> Unit) = writeback.bind(adapter, allowed, ready)
+    fun detach(adapter: Any) = writeback.detach(adapter)
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     fun apply(
@@ -188,7 +190,7 @@ internal object FavoriteGroupInjector {
         notify: Boolean = false,
     ) {
         val startedAt = System.currentTimeMillis()
-        appliedAdapter = java.lang.ref.WeakReference(adapter)
+        if (!writeback.accepts(adapter)) return
         try {
             val field = adapter.javaClass.getDeclaredField("mData").apply { isAccessible = true }
             @Suppress("UNCHECKED_CAST")

@@ -113,7 +113,7 @@ config/ apps/ framework/ log/
 用 `saveLayer` + `SrcIn` 把渐变填进模板，模板按源图标跨次呼出缓存（`MorePlateMasks`）；取不到模板时退回 0.25 圆角方形。
 内侧圆弧每向内一圈乘步进——两条圆弧 0.92，三四条 0.95（用户定）；角落空白区与设置页命中预览同样按最内圈缩小后的直径。
 屏幕中央所选应用卡片（开关 `radial_center_preview` 默认关、`radial_center_label` 默认开）：`CornerRadialOverlayView.drawCenterPreview` 在扇形画布上画，
-不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长从 `DENSITY_XXXHIGH` 自适应图标重画（再走 `IconShapes`），不放大扇形那份位图，最近 4 个缓存在目录里；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
+不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长 2×（最长 1024 px）从 `DENSITY_XXXHIGH` 图标重画（再走 `IconShapes`），不放大扇形那份位图，最近 4 个缓存在目录里；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
 淡入淡出 120 ms、换项从 0.94 弹回；选中「更多」不显示。开关与大小经 `begin(centerPreview, centerLabel, centerSizeDp)` 每次呼出从 `lastSettings` 传入，不依赖目录快照。
 
 **扇形目录**　`ColorOsAppCatalog` 在 system_server 的单线程执行器里工作，一次刷新分两步发布：
@@ -351,6 +351,9 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 8. 工程纪律：构建输出落 `out/`、临时文件落 `tmp/`、`release.keystore` 必须保留、交付前 `tar -czf` 打包放存储根目录
 
 ## 十、当前状态
+
+第四组源码 versionCode 2026110838：面板异步写回绑定当前会话并复核搜索和原生列表开关；图标失效与缓存写回按同一代数原子校验。中央预览按屏幕尺寸 2× 重绘（最长 1024 px、缓存 4 张），低清主题位图尝试 APK 自适应/矢量源（用户已授权优先清晰度），最终统一按设置的圆形 / 圆角方形塑形；新增 PREVIEW_ICON_SOURCE 日志用于确认来源。位图保留原 alpha，不再强制圆形裁切；侧边栏工具仍受原始位图分辨率限制。
+
 
 第三组源码 versionCode 2026110837：手势入口收到 system_server 经 UID 校验的许可后才接管；许可在前台、设置、环境和用户切换时更新，触摸路径只读缓存。广播有调度延迟，前台切换边界仍须设备验证。窗外关闭只接受从 DOWN 实际捕获的流。黑名单变更在串行写入队列按包合并，选择页即时反馈待确认状态。
 

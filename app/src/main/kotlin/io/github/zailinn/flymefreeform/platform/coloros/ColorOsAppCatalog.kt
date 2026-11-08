@@ -125,6 +125,8 @@ internal class ColorOsAppCatalog(
     // 名称与原始图标也会被面板图标线程读写。
     private val labelCache = ConcurrentHashMap<PinnedTarget, String>()
     private val iconCache = ConcurrentHashMap<PinnedTarget, Bitmap>()
+    private val iconRevision = io.github.zailinn.flymefreeform.apps.CacheRevision()
+    private val previewRenderer = HighResolutionIconRenderer(context)
     /** 中央卡片的高清图标，只留最近 [PREVIEW_CACHE_SIZE] 个（默认大小每个约 0.5 MB，最大约 1.4 MB）。 */
     private val previewCache =
         object : LinkedHashMap<PinnedTarget, Bitmap>(PREVIEW_CACHE_SIZE, 0.75f, true) {
@@ -161,6 +163,10 @@ internal class ColorOsAppCatalog(
         if (packageName.isNullOrEmpty()) return
         invalidatedPackages += packageName
         appsRevision.incrementAndGet()
+        iconRevision.invalidate {
+            iconCache.keys.removeAll { it is PinnedTarget.App && it.packageName == packageName }
+            synchronized(previewCache) { previewCache.clear() }
+        }
     }
 
     fun refresh(settings: ModuleSettingsSnapshot, reloadApps: Boolean = false) {
@@ -174,11 +180,13 @@ internal class ColorOsAppCatalog(
         dropInvalidatedPackages()
         val shape = ModulePreferences.coerceIconShape(settings.iconShape)
         if (shape != iconShape) {
-            iconShape = shape
-            shapedCache.clear()
-            nativeShapedCache.clear()
-            iconCache.clear()
-            synchronized(previewCache) { previewCache.clear() }
+            iconRevision.invalidate {
+                iconShape = shape
+                shapedCache.clear()
+                nativeShapedCache.clear()
+                iconCache.clear()
+                synchronized(previewCache) { previewCache.clear() }
+            }
         }
         val index = currentIndex() ?: return
         if (IconShapes.isSquare(shape)) ensureSquareMask(index)
@@ -301,6 +309,8 @@ internal class ColorOsAppCatalog(
         index: AppIndex,
         onLoaded: (Bitmap) -> Unit,
     ): () -> Unit {
+        val revision = iconRevision.current()
+        if (index.revision != appsRevision.get()) return {}
         iconCache[target]?.let { cached ->
             onLoaded(cached)
             return {}
@@ -309,10 +319,10 @@ internal class ColorOsAppCatalog(
         val cancelled = AtomicBoolean()
         panelIconExecutor.execute {
             // 格子已滚出视野的请求直接跳过，快速滑动时不必把途经的图标全部画完。
-            if (cancelled.get()) return@execute
-            val icon = rawIcon(target, info) ?: return@execute
+            if (cancelled.get() || !iconRevision.isCurrent(revision)) return@execute
+            val icon = rawIcon(target, info, revision) ?: return@execute
             icon.prepareToDraw()
-            if (!cancelled.get()) onLoaded(icon)
+            if (!cancelled.get() && iconRevision.isCurrent(revision)) onLoaded(icon)
         }
         return { cancelled.set(true) }
     }
@@ -327,7 +337,9 @@ internal class ColorOsAppCatalog(
         sizePx: Int,
         onLoaded: (Bitmap) -> Unit,
     ): () -> Unit {
-        if (sizePx <= 0) return {}
+        val revision = iconRevision.current()
+        if (sizePx <= 0 || index.revision != appsRevision.get()) return {}
+        val requestedShape = iconShape
         synchronized(previewCache) { previewCache[target] }?.takeIf { it.width >= sizePx }?.let { cached ->
             onLoaded(cached)
             return {}
@@ -335,22 +347,11 @@ internal class ColorOsAppCatalog(
         val info = launcherInfoOf(target, index) ?: return {}
         val cancelled = AtomicBoolean()
         panelIconExecutor.execute {
-            if (cancelled.get()) return@execute
-            val icon =
-                try {
-                    val drawable = info.getIcon(android.util.DisplayMetrics.DENSITY_XXXHIGH)
-                    val raw =
-                        createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888).also { bitmap ->
-                            drawable.setBounds(0, 0, sizePx, sizePx)
-                            drawable.draw(Canvas(bitmap))
-                        }
-                    IconShapes.apply(raw, iconShape, isApp = true, squareMask = null)
-                } catch (_: RuntimeException) {
-                    null
-                } ?: return@execute
+            if (cancelled.get() || !iconRevision.isCurrent(revision)) return@execute
+            val icon = previewRenderer.render(info, sizePx, requestedShape) ?: return@execute
             icon.prepareToDraw()
-            synchronized(previewCache) { previewCache[target] = icon }
-            if (!cancelled.get()) onLoaded(icon)
+            if (!iconRevision.commit(revision) { synchronized(previewCache) { previewCache[target] = icon } }) return@execute
+            if (!cancelled.get() && iconRevision.isCurrent(revision)) onLoaded(icon)
         }
         return { cancelled.set(true) }
     }
@@ -419,14 +420,17 @@ internal class ColorOsAppCatalog(
             }.ifEmpty { info.componentName.packageName }
         }
 
-    private fun rawIcon(target: PinnedTarget, info: LauncherActivityInfo): Bitmap? =
-        iconCache[target] ?: try {
-            // 「更多」面板直接用这份图标，也按「图标形状」统一本体大小与外形。
-            IconShapes.apply(info.getIcon(context.resources.displayMetrics.densityDpi).toBitmap(), iconShape, isApp = true, squareMask = null)
-                .also { iconCache[target] = it }
-        } catch (_: RuntimeException) {
-            null
-        }
+    private fun rawIcon(target: PinnedTarget, info: LauncherActivityInfo,
+        revision: Long = iconRevision.current()): Bitmap? {
+        if (!iconRevision.isCurrent(revision) || appIndex?.revision != appsRevision.get()) return null
+        iconCache[target]?.let { return it }
+        val shape = iconShape
+        return try {
+            val icon = IconShapes.apply(info.getIcon(context.resources.displayMetrics.densityDpi).toBitmap(),
+                shape, isApp = true, squareMask = null)
+            if (iconRevision.commit(revision) { iconCache[target] = icon }) icon else null
+        } catch (_: RuntimeException) { null }
+    }
 
     /** 「更多」面板与扇形塑形前共用的条目：按图标形状统一过的系统图标。 */
     private fun plainEntry(
