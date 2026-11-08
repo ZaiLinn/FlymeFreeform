@@ -127,7 +127,7 @@ internal class ColorOsAppCatalog(
     private val iconCache = ConcurrentHashMap<PinnedTarget, Bitmap>()
     private val iconRevision = io.github.zailinn.flymefreeform.apps.CacheRevision()
     private val previewRenderer = HighResolutionIconRenderer(context)
-    /** 中央卡片的高清图标，只留最近 [PREVIEW_CACHE_SIZE] 个（默认大小每个约 0.5 MB，最大约 1.4 MB）。 */
+    /** 中央卡片的高清图标，只留最近 [PREVIEW_CACHE_SIZE] 个（按显示尺寸 1.5 倍绘制，默认大小每个约 1.6 MB，最大 4 MiB）。 */
     private val previewCache =
         object : LinkedHashMap<PinnedTarget, Bitmap>(PREVIEW_CACHE_SIZE, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PinnedTarget, Bitmap>?): Boolean = size > PREVIEW_CACHE_SIZE

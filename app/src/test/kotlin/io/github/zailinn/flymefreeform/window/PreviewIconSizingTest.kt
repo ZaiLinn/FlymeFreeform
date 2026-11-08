@@ -5,7 +5,7 @@ import org.junit.Test
 
 class PreviewIconSizingTest {
     @Test fun renderBudgetCoversDisplayAndBodyMagnification() {
-        assertEquals(720, PreviewIconSizing.renderSize(96f * 3f * 1.25f))
+        assertEquals(540, PreviewIconSizing.renderSize(96f * 3f * 1.25f))
         assertEquals(1024, PreviewIconSizing.renderSize(160f * 4f * 1.25f))
         assertTrue(PreviewIconSizing.renderSize(800f) >= 800)
     }
