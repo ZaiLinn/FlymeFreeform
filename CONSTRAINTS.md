@@ -236,9 +236,11 @@ sh local-release.sh --archive     # 另把源码打包到 tmp/ 并 adb push 到 
 - LSPosed 模块仓库（`Xposed-Modules-Repo/io.github.zailinn.flymefreeform`）尚未建立；建立后其 Release 资产须与源码仓库同一摘要，
   介绍页 README 由主 README 转换：去 shields 徽章块、`<h1 align="center">` 改 `# `、相对图片路径改 raw 绝对地址
 - remote：`origin` = `ZaiLinn/FlymeFreeform`，`upstream` = `Hoerire/FlymeFreeform`（2026-11-08 设置）。绝不向 `upstream` 推送
-- `origin/main` 目前与 `Mangi-11/FlymeFreeform` 的 main 完全相同（`2475af1`，0.1.9），与本地历史（基于 Hoerire 的
-  单条提交 `87c0aaa`）**没有共同祖先**，不能直接快进推送；推送方式（新分支 / 覆盖 main）由用户决定。
-  `upstream/main` 已被 Hoerire 强推为 `f6d03ac`，本地仍基于旧的 `87c0aaa`
+- 2026-11-08 按用户要求以本地历史覆盖了 `origin/main`（原内容是 Mangi-11 0.1.9 `2475af1`，可从 Mangi-11 仓库找回）。
+  本地 main 跟踪 `origin/main`，之后正常快进推送，不再强推
+- `upstream/main` 已被 Hoerire 强推为 `f6d03ac`，本地历史仍基于旧的 `87c0aaa`，两者不共享后续提交
+- 推送遇 `send-pack: unexpected disconnect` 时加 `-c http.postBuffer=524288000 -c http.version=HTTP/1.1` 重试
+- 提交按改动拆分；同一文件多次修改又没有中间快照时，只能按文件分组提交
 
 ## 七、日志与排障
 
@@ -301,13 +303,14 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-08 09:40（Asia/Shanghai）
+更新时间：2026-11-08 10:05（Asia/Shanghai）
 
 | 项 | 值 |
 |---|---|
-| 版本 | 1.3.6 / 2026110717（版本号未改，以 sha256 为准） |
-| 工作副本 | `~/Documents/Code/FlymeFreeform`，基于 `87c0aaa`，改动**未提交、未推送**；`origin` = 用户 fork（内容为 Mangi-11 0.1.9，与本地无共同历史），`upstream` = Hoerire |
-| 最新构建 | `out/FlymeFreeform-v1.3.6.apk`，sha256 `bdff3a84…ba44`，2117935 B，用户密钥签名（证书 SHA-256 `14f19d42…4b52`），包名 `io.github.zailinn.flymefreeform`；含包 A–E 全部改动（用户要求直接出最新包，未按一包一改拆分）；**未安装** |
+| 版本 | 1.3.6 / 2026110717 |
+| 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main` = `c156254`（基于 `87c0aaa` 的 7 个提交：`8d9f06d` 包名、`f700547` 测试期望、`277f1ed` 面板标题与搜索返回、`16a5753` 配置模型、`eb6aeb4` 扇形浮层与目录、`1d53dfc` 模块界面、`c156254` 文档）；`upstream` = Hoerire |
+| 已发布 | Release [v1.3.6](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.6)（tag 指向 `c156254`），资产 `FlymeFreeform-v1.3.6.apk` 与 `out/` 产物同一 sha256（GitHub 资产摘要已核对） |
+| 最新构建 | `out/FlymeFreeform-v1.3.6.apk`，sha256 `bdff3a8496c5ac89735fe927b8dd16887fe2a95723240f99f03765f7c5d3ba44`，2117935 B，用户密钥签名（证书 SHA-256 `14f19d42…4b52`），包名 `io.github.zailinn.flymefreeform`；含包 A–E 全部改动（用户要求直接出最新包，未按一包一改拆分）；**未安装** |
 | 设备已装 | `beec312c…86d7`（调试签名 `CN=Android Debug`，v1/v2/v3 均通过、`-P 16` 对齐通过），system_server 已重启，运行中 |
 | 设备包包含 | 多圆弧（1–4 条）与按圈自定义内圈、「更多」分组标题与搜索返回修复、扇形目录两步发布与缓存、两圈时第二圈命中范围加宽 |
 | 已改未打包（按包拆分计划） | 包 A：「更多」面板图标按需加载（`PanelIconLoader`）+ 目录日志改走 `ModuleLog.debug`（`ICON_MISSING` 不再常开）+ 开机首次先发布常用/最近一批　包 B：扇形应用页左右滑动切圈、增删展开/收起动画、跨圈移动固定项（只需重开模块应用）　包 C：补位方式（最近使用/最常使用/不补位）+「更多」顶部随补位依据 + 补位跳过前台应用　包 D：跨圈换格震动　包 E：命中范围预览按各圈实际条数（模块应用）。另有包名改为 `io.github.zailinn.flymefreeform`（随第一次换签名一起装） |
@@ -328,7 +331,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 1. 包 A–E 分开构建验证（改动在同一工作区，需先分开提交或按文件分批构建）：
    A 看 `SYSTEM_CATALOG_PANEL_ORDER` 耗时与重启后立刻点「更多」；B 看滑动切圈、增删动画、跨圈移动；
    C 看三种补位方式与前台应用不进补位；D 看跨圈震动；E 拖命中范围滑条看预览
-2. 提交工作副本；是否推到 `ZaiLinn/FlymeFreeform` 等用户决定
+2. 本节此次更新尚未提交（仓库里的 CONSTRAINTS.md 停在 `c156254`）
 3. 待评估：滑选时显示应用名
 
 ### 本轮的坑
