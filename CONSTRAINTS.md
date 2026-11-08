@@ -80,7 +80,7 @@ config/ apps/ framework/ log/
 | 通知点击 | `hook/NotifBundleHook.kt` |
 | 各类启动判定 | `hook/launch/ActivityStarterZoomInjector.kt` |
 | 数量上限与准入 | `hook/launch/FlexibleWindowLimitHook.kt` |
-| 窗外关闭 | `hook/OutsideTapCloseHookInstaller.kt` |
+| 小窗关闭（窗外单击 / 双击、双击横条） | `hook/OutsideTapCloseHookInstaller.kt` |
 | 快速上滑 | `hook/HandleSwipeUpHookInstaller.kt` |
 | 暂停条件 | `hook/ModuleEnvironmentState.kt` |
 | 设置界面 | `ui/` 下对应 Screen |
@@ -143,6 +143,16 @@ config/ apps/ framework/ log/
 **通知点击**　钩 SystemUI 的 `OplusStatusBarNotificationActivityStarterExImpl.setNotificationTypeStarterLog`
 （类名带 `Impl`）：依次移除横幅 → 剥离 `android:activity.remoteTransition` → 写窗口参数 →
 非横幅时调 `collapseShadeForActivityStart()`。横幅实例早于钩子创建，需同时钩 `HeadsUpManagerImpl.showNotification` 取 thisObject。
+
+**双击横条关闭**　「小窗关闭」第 4 项（`OutsideTapCloseMode.CaptionDoubleTap`，存储值 3），与窗外单击 / 双击互斥。
+钩 `FlexibleTaskCaptionView.onDoubleTap`：原方法只处理迷你小窗（退出迷你态或与前台交换），普通小窗返回 false；
+只在原方法返回 false、且横条所属任务是普通小窗（柔性状态 1）时调 `exitFlexibleTask(task, true, 0, 0)` 关闭该任务。
+该模式下 `closesOnOutsideTap` 为假，横条触控区不扩到窗外，避免双击窗外也落到横条上被当成关闭（参考 2237742261/FlymeFreeform 的同类实现）。
+
+**设置广播**　设置页每次改设置都发 `ACTION_PINNED_TARGETS_CHANGED`，带完整快照（`SettingsTransfer.EXTRA_SETTINGS`，
+由 `ModuleSettingsSnapshot.writeTo/readFrom` 编解码，新增设置无需另登记），发往 android、smartsidebar、systemui、launcher 四个进程，
+接收端统一走 `ProcessConfiguration.applySettingsBroadcast`；旧固定项字段仍一并发送，给尚未重启、仍跑旧代码的 Hook 进程用。
+SystemUI 在 Application.onCreate、桌面在首次触摸时登记接收端。目的：模块重装后远程配置回调失效，靠广播让所有设置不重启即生效。
 
 **窗外关闭 / 快速上滑 / 数量上限**　分别钩 `FlexibleTaskController.exitFlexibleTask`、
 普通小窗底部横条上滑入口、`FlexibleWindowManagerService.getMaxWinNum`；应用准入钩三类共 9 个
@@ -322,20 +332,21 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-08 14:30（Asia/Shanghai）
+更新时间：2026-11-08 18:40（Asia/Singapore，按设备时钟）
 
 | 项 | 值 |
 |---|---|
-| 版本 | 1.3.10 / 2026110821。用户要求覆盖重发 v1.3.10（破例未加 versionName）：tag 移到含方形「更多」修复的提交，Release 资产替换 |
-| 本地构建 | `out/FlymeFreeform-v1.3.10.apk`，sha256 `afc03c6bdb1d36765f861c0a6b470d9f71181f22ddb5646e6b8102a4f62f65f0`，2158895 B，versionCode 2026110821，用户密钥签名（即重发后的 v1.3.10 Release 资产），未装到设备。首发的 1.3.10（2026110820）`83d94a5e…2bf3` 备份在 `tmp/FlymeFreeform-v1.3.10-83d94a5e.apk`。之前的测试包：1.3.9 `b779d219`、1.3.8 `e8e93fc1` |
+| 版本 | 工作副本 1.4.2 / 2026110831（下次构建 versionName 再加）；设备为 1.4.2 / 2026110830（`out/FlymeFreeform-v1.4.2.apk`，sha256 `012ca69d…3641`，2026-11-08 18:35 装并重启 system_server）。v1.3.10 曾按用户要求覆盖重发（破例未加 versionName），重发资产为 2026110821 |
+| 本地构建 | `out/FlymeFreeform-v1.4.1.apk`，sha256 `04d7b8e7662f83d8542a036cef3d3c73689fd85596cfe51caa62d554c63cccbf`，用户密钥签名，已装设备、未发布。1.4.0 `1e847fe3…f358` 有死锁勿用；1.3.12 `2ce93a54…6cfd`；1.3.11 `b56e0400…42bd`；`out/FlymeFreeform-v1.3.10.apk` 为重发的 Release 资产 `afc03c6b…65f0`，首发包 `83d94a5e…2bf3` 备份在 `tmp/FlymeFreeform-v1.3.10-83d94a5e.apk` |
 | 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main`。v1.3.7（`5ce7888`）之后：用户网页提交 `bdb6a30`（README 致谢精简），`a454470` 新设置项、`5a89d85` 「更多」原有列表 + 字母索引 + 回桌面收起、`9d1c35d` 扇形外大内小 + 屏幕中央所选应用 + 内置面板回桌面收起、`c1d0893` 添加应用快速点击闪动，之后是 1.3.10 版本号与文档、用户网页提交 `e3681e4`（README 去上游链接）、方形「更多」修复、README 换 png 截图，最后一个提交为重发 1.3.10 的版本号与文档（v1.3.10 tag 所指）。前三个功能提交均在临时 worktree 单独编译通过；`upstream` = Hoerire |
 | 已发布 | Release [v1.3.10](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.10)，资产 `FlymeFreeform-v1.3.10.apk`（sha256 见「本地构建」）；上一版 v1.3.7 资产 `a8344244…61d3` |
-| 设备已装 | `b779d219`（1.3.9 / 2026110818），比 1.3.10 少添加应用闪动修正与占用优化。13:09 前后重启过侧边栏与 system_server；当时设置 `pnative=false`、`center=true`、`vlog=true` |
+| 设备已装 | `04d7b8e7`（1.4.1 / 2026110827），17:54 装后经 restart-gate 重启 system_server。此前 1.4.0 在 17:20:50 死锁、17:23 看门狗软重启 |
 | 设备另有 | 旧包 `io.github.hoerire.flymefreeform` 仍在，应在 LSPosed 停用并卸载 |
 | 设备反馈 | 1.3.8：中央卡片有黑底板、图标发糊、字母索引条不出现，1.3.9 已改；1.3.9：添加应用快速点击闪动，1.3.10 已改。第 2 圈「其余变灰」核实为该圈已存满 5 项（两个工具 + DeepSeek、Duolingo、Firefox），按设计 |
-| 未打包改动 | 无 |
-| 未在设备验证 | 方形模式下「更多」底板外形、大小是否与相邻应用图标一致（深浅色各看一次）；1.3.10 相对 1.3.9 的添加应用闪动修正与三处占用优化；屏幕中央所选应用卡片（无底板、高清图标、应用名省略、横屏位置、换项弹动）；扇形图标外大内小（方形模式圆角是否被裁、选中放大是否越出屏幕）；字母索引条（日志 `PANEL_ALPHABET_SHOWN` / `PANEL_ALPHABET_NO_LIST`；右列图标能否点、跳转、震动、深色文字颜色）；回桌面收起「更多」（`ALL_APPS_CLOSE_SYSTEM_DIALOGS_<reason>` / `SYSTEM_MORE_PANEL_CLOSE_<reason>`）；跟随系统时 LuckyTool 上限生效 |
-| 待查 | 用户反映装 `e38172b3` 后增减应用扇形不更新。之后 system_server 无 `MODULE_STATE_CHANGED`，但固定项走广播 `override` 路径本就不打这条日志，10:36 前后的目录刷新可能就是广播触发，原因未定 |
+| 未打包改动 | 相对设备上的 1.4.2：① X 已在小窗时再点链接，1.4.2 放行普通启动后 X 以 CLEAR_TASK 重启自身、系统不认小窗参数而退成全屏（日志 `setScenario --> 0`、无 `collectFlexibleTaskInfo`）；改为吞掉本次启动，主线程先经 `ZoomTaskCloser`（OutsideTapCloseHookInstaller 在 `addFlexibleTask` 时记下 FlexibleTaskController）对该包最上层普通小窗 `exitFlexibleTask`，400 ms 后以 `startZoomWindow` 重开，走首次打开的路径（日志 `ZOOM_REOPEN_SCHEDULED_` / `ZOOM_REOPENED_closed…_started…`）；Telegram 重发的同一链接按 linkKey 吞掉。② 「更多」原有列表模式打开时图标往左挪：字母索引条在拼音算完、列表已布局后才给列表加右内边距，网格列宽重算；改为建卡片、绑定 adapter、逐帧找列表时就先预留（只认绑定了本面板 adapter 的列表），索引条不显示也不撤。本机编译与 183 项单测通过，未构建。
+| 未在设备验证 | 下一包：Telegram 点 Chrome 链接小窗（`_link1` + `ZOOM_PREEMPTED_com.android.chrome`）、点 X 链接小窗且直达帖子（中转页重启是否接受注入，`ZOOM_INJECTED_self_relaunch`；若被 FlexibleTaskController 拒则全屏但链接仍在）、X 已在小窗时再点链接：旧小窗关闭后重开为小窗并显示新帖子（`ZOOM_REOPENED_closedtrue_startedtrue`），不再退成全屏；「更多」原有列表模式打开时图标不再左挪；装新包并重启一次后，再装新包不重启，改图标形状 / 圆弧数 / 角落开关 / 小窗关闭方式能否即时生效（详细日志 `SETTINGS_BROADCAST_APPLIED_FULL`）；「双击横条」关普通小窗（`CAPTION_DOUBLE_TAP_CLOSE`），迷你小窗双击仍为原生行为，该模式下点窗外不关、连点链接不再卡死 system_server；登录授权类 startActivityForResult 仍全屏且能回传；应用内翻页不被误接管；1.3.12：增删固定项不重启即生效；之后再装新包（不重启 system_server）增删固定项仍生效；搜索添加时连点应用，列表顶部不再弹出「正在读取侧边栏目录」、工具与快捷入口不变灰、不再出现「不可用」；方形模式下「更多」底板外形、大小是否与相邻应用图标一致（深浅色各看一次）；1.3.10 相对 1.3.9 的添加应用闪动修正与三处占用优化；屏幕中央所选应用卡片（无底板、高清图标、应用名省略、横屏位置、换项弹动）；扇形图标外大内小（方形模式圆角是否被裁、选中放大是否越出屏幕）；字母索引条（日志 `PANEL_ALPHABET_SHOWN` / `PANEL_ALPHABET_NO_LIST`；右列图标能否点、跳转、震动、深色文字颜色）；回桌面收起「更多」（`ALL_APPS_CLOSE_SYSTEM_DIALOGS_<reason>` / `SYSTEM_MORE_PANEL_CLOSE_<reason>`）；跟随系统时 LuckyTool 上限生效 |
+| 待办计划 | `docs/plan-starter-hook-refactor.md`：starter 钩子锁安全（统一副作用出口、运行时锁检测、构建前静态检查）与启动判定纯函数化 + 真实日志回归测试，交由 Codex 施工，尚未开始 |
+| 待查 | 装新包后增减应用扇形不更新：已定位为固定项广播未共享身份（`sentFromUid` 为 -1 被接收端丢弃），平时只靠 LSPosed 远程配置回调，而模块重装后 Hook 进程里该回调不再触发。1.3.12 已让广播共享身份；图标形状、圆弧数等其他设置原先只走远程配置，现已改为全量广播（待设备验证）；1.4.0 重启后侧边栏目录不可用：推断为上游已修的悬空绑定（system_server 起来后侧边栏进程晚到，连接回调晚于超时即放弃建链且不再重绑），现有版本无日志可证，移植后看 `SIDEBAR_ENTRY_TIMEOUT_LIST` 与是否恢复 |
 | 单元测试 | 180 项全部通过（3 项 skip） |
 | 工具 | `local-release.sh`、`restart-gate.sh`（均列入 `.gitignore`，不随仓库分发） |
 | 关于页 | 只保留一个「项目地址」→ `ZaiLinn/FlymeFreeform`；上游地址与致谢在 README |
@@ -354,6 +365,30 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 3. 待评估：滑选时显示应用名
 
 ### 本轮的坑
+
+- **重启后设置页报「检测到多个框架服务」**：1.4.2 重启 system_server 后马上打开设置页出现，强停应用再开即恢复「已连接」。
+  推断 lspd（未随 system_server 重启）在模块应用启动时把服务递了两次，`liveServices` 里有两个对象，于是禁用写入防配置分叉；未取到绑定日志（应用日志超配额被丢）。
+- **1.4.0 致 system_server 死锁（看门狗重启）**：`tmp/traces_SystemServer_WDT_1.4.0_deadlock.txt`（设备 `/data/anr/traces_SystemServer_WDT08_11_17_22_27.465_pid22251`）。
+  binder 线程 tid=336 在 `ActivityStarter.execute` 内持有 `WindowManagerGlobalLock`，经我们的 executeRequest 钩子
+  （`x1` = `ActivityStarterZoomInjector`，R8 map id `f287fa6a…` 与 1.4.0 构建一致）进入 `requestBannerCollapse` 的 `ContextImpl.sendBroadcast`，
+  等 AMS 锁；tid=83 在 `attachApplication` 里持 AMS 锁、等 WM 全局锁（被跳转的应用正在起进程）——AB-BA 死锁。
+  抢占路径里的任何 sendBroadcast / 拿 AMS 锁的调用都不能在 starter 钩子里同步执行（已改：`requestBannerCollapse` 投递到主线程）；1.4.0 让每次链接都走抢占，把原本罕见的时序变成必现。
+  同批次还见到：X 中转页以 MAIN 重启自身时改走 `startZoomWindow` 会丢掉链接、只停在首页；X 已在小窗时再点链接，`startZoomWindow` 只把已有任务提到前台，链接不送达
+
+- 应用间跳转（Telegram 点 X / Chrome 链接）实测全屏：从 Activity 调 `startActivity` 也带 `resultTo`（`rt=1`，requestCode -1），
+  抢占路径见 resultTo 一律放行，只剩往 options 注入小窗参数，被柔性任务控制器拒绝（`adjustOptionsForFlexibleTask reason:8/9`），
+  task `mode=fullscreen`；且 X（`MainActivity` 以 NEW_TASK|CLEAR_TASK 重启自身）、Chrome（`IntentDispatcher` → `CustomTabActivity` 新任务）都有中转页。
+  1.4.0 改为：只有 requestCode >= 0 才算等结果；不等结果的第三方 `ACTION_VIEW` 跨包链接改走 `startZoomWindow`（`isPlainInterAppLink`），
+  1.5 s 内发起方重发同一链接直接吞掉（Telegram 会用不同 flags 连发两次）；刚经 zoom 入口打开的应用 3 s 内以 NEW_TASK 重启自身也走 zoom 入口，最多 2 次（`isSelfRelaunch`）
+
+- 固定项广播 `ACTION_PINNED_TARGETS_CHANGED` 原先用普通 `sendBroadcast` 发送，接收端（system_server、侧边栏）核对 `sentFromUid`，
+  未共享身份时它是 INVALID_UID，推送一律被丢弃，`dumpsys activity broadcasts` 里却显示 DELIVERED。改为 `BroadcastOptions.setShareIdentityEnabled(true)`（1.3.12）。
+  装新包只强停模块应用而不重启 system_server 时，远程配置回调失效、广播又被丢，增删应用不生效
+- `killall system_server` 不会新开 `modules_*.log`（日志按 LSPosed 守护进程启动分文件），重启后的记录追加在原文件里；等待就绪时按时间过滤，不能按「最新文件里有 COORDINATOR_READY」判断
+
+- 添加应用页的侧边栏目录读取以 `canChangeSettings` 为键：每次增删置起 isUpdating 就取消并重发请求，顶部反复弹出「正在读取侧边栏目录」、工具与快捷入口变灰；
+  system_server 端 `ColorOsEntryCatalogBroker` 对 500 ms 内的重复请求、满队列（4）的请求都直接丢弃且不回复，客户端等满 7 s 超时即判「不可用」。
+  改为以 `settingsEditable` 为键，并让目录读到一次后常驻（静默刷新、失败保留缓存）
 
 - 添加应用页的本地顺序 `localOrders` 曾随 `canChangeSettings`（含 isUpdating）清空：每次写入时勾选先跳回旧配置再恢复（图标文字闪动），快速连点时后一次基于旧列表提交、冲掉前一次。改为只随 `settingsEditable` / `issue` 清空（已发布于 1.3.10）
 - 占用检查后的三处优化（已发布于 1.3.10）：中央卡片高清图标的留白比例改在图标线程算（原在 system_server 主线程逐像素扫，滑选时可能掉帧）；中央卡片应用名的截断与测量按「选中项 + 大小 + 画布宽 + 字体缩放」缓存，不再每帧重算；字母索引的拼音首字母在 `PanelPinyin.executor` 后台算，全部命中缓存时才在主线程直接取，结果按 `alphabetGeneration` 只采用最新一次。高清图标缓存 6 → 4 个
