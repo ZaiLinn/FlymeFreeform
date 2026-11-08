@@ -476,6 +476,7 @@ internal class ColorOsAllAppsContent(
     private fun refreshAlphabet() {
         val bar = indexBar ?: return
         if (boundAdapter == null) return bar.hide()
+        reserveIndexInset()
         val list = getData.call(search) as? List<*>
         val start = list?.indexOfFirst(::isAppTitle) ?: -1
         if (list == null || start < 0 || currentQuery().isNotEmpty()) {
@@ -521,6 +522,7 @@ internal class ColorOsAllAppsContent(
         surface.postDelayed({
             if (closed || indexBar !== bar || letterTargets.isEmpty()) return@postDelayed
             val recycler = recyclerView()
+            reserveIndexInset(recyclerView(exact = true))
             if (recycler == null || !recycler.isLaidOut || recycler.height <= 0) {
                 if (attempt < INDEX_BAR_MAX_ATTEMPTS) {
                     placeIndexBar(bar, attempt + 1)
@@ -530,12 +532,7 @@ internal class ColorOsAllAppsContent(
                 }
                 return@postDelayed
             }
-            // 列表右侧让出索引条的宽度，最右一列图标不会被索引条挡住触摸。
-            if (paddedRecycler !== recycler) {
-                val inset = (INDEX_BAR_INSET_DP * context.resources.displayMetrics.density).toInt()
-                recycler.setPadding(recycler.paddingLeft, recycler.paddingTop, recycler.paddingRight + inset, recycler.paddingBottom)
-                paddedRecycler = recycler
-            }
+            reserveIndexInset(recycler)
             val bounds = android.graphics.Rect(0, 0, recycler.width, recycler.height)
             runCatching { surface.offsetDescendantRectToMyCoords(recycler, bounds) }
                 .onFailure {
@@ -545,6 +542,20 @@ internal class ColorOsAllAppsContent(
             bar.show(letterTargets.keys, bounds.top, bounds.bottom)
             panelLog("PANEL_ALPHABET_SHOWN attempt=" + attempt + " top=" + bounds.top + " bottom=" + bounds.bottom)
         }, if (attempt == 0) 0L else INDEX_BAR_RETRY_MS)
+    }
+
+    /**
+     * 列表右侧让出索引条的宽度，最右一列图标不会被索引条挡住触摸。
+     *
+     * 要在列表首次布局前加上：拼音首字母在后台算完才摆索引条，那时再改内边距，
+     * 网格列宽重算，整屏图标会在面板打开后往左挪一下。所以建卡片和绑定 adapter 时就先预留，
+     * 索引条最终没显示（搜索中、找不到列表）也不撤，保持列表宽度不变。
+     */
+    private fun reserveIndexInset(recycler: ViewGroup? = recyclerView(exact = true)) {
+        if (recycler == null || paddedRecycler === recycler) return
+        val inset = (INDEX_BAR_INSET_DP * context.resources.displayMetrics.density).toInt()
+        recycler.setPadding(recycler.paddingLeft, recycler.paddingTop, recycler.paddingRight + inset, recycler.paddingBottom)
+        paddedRecycler = recycler
     }
 
     private fun isAppTitle(item: Any?): Boolean =
@@ -557,8 +568,11 @@ internal class ColorOsAllAppsContent(
         ""
     }
 
-    /** 绑定了本面板 adapter 的那个 RecyclerView；adapter 尚未挂上时退回面板里第一个 RecyclerView。 */
-    private fun recyclerView(): ViewGroup? {
+    /**
+     * 绑定了本面板 adapter 的那个 RecyclerView；adapter 尚未挂上时退回面板里第一个 RecyclerView。
+     * [exact] 为真时不退回，用于提前预留内边距，避免误改别的列表。
+     */
+    private fun recyclerView(exact: Boolean = false): ViewGroup? {
         val adapter = boundAdapter ?: return null
         var firstRecycler: ViewGroup? = null
         fun isRecycler(type: Class<*>?): Boolean {
@@ -580,7 +594,7 @@ internal class ColorOsAllAppsContent(
             }
             return null
         }
-        return find(view) ?: firstRecycler
+        return find(view) ?: if (exact) null else firstRecycler
     }
 
     /** 索引条回调：把该字母第一个应用滚到列表顶部。 */
@@ -643,6 +657,7 @@ internal class ColorOsAllAppsContent(
             }
         }
         card = surface
+        if (indexBar != null) reserveIndexInset()
         // adapter 可能先于卡片绑定，此时索引条还不存在；卡片建好后补算一次。
         if (indexBar != null && boundAdapter != null) refreshAlphabet()
         return surface
