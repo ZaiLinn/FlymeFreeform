@@ -89,13 +89,6 @@ internal fun FlymeFreeformNavHost(
             }
         }
     }
-    val navigateToEnvironmentScope = remember(backStack) {
-        {
-            if (backStack.lastOrNull() != AppRoute.EnvironmentScope) {
-                backStack.add(AppRoute.EnvironmentScope)
-            }
-        }
-    }
     val navigateToBlacklist = remember(backStack) {
         {
             if (backStack.lastOrNull() != AppRoute.Blacklist) {
@@ -125,6 +118,20 @@ internal fun FlymeFreeformNavHost(
         }
     }
 
+    val zoomOptionsContent: @Composable () -> Unit = {
+        ZoomOptionsScreen(
+            state = state,
+            onBack = popBackStack,
+            onZoomMaxWindowCountChange = onZoomMaxWindowCountChange,
+            onZoomAllowAnyAppChange = onZoomAllowAnyAppChange,
+            onZoomLaunchChange = onZoomLaunchChange,
+            onOutsideTapCloseModeChange = onOutsideTapCloseModeChange,
+            onHandleSwipeUpToMiniEnabledChange = onHandleSwipeUpToMiniEnabledChange,
+            onPauseInLandscapeChange = onPauseInLandscapeChange,
+            onPauseInGameModeChange = onPauseInGameModeChange,
+            onNavigateToBlacklist = navigateToBlacklist,
+        )
+    }
     val squareIconMask = remember(apps) { squareIconMaskOf(apps) }
     CompositionLocalProvider(
         LocalIconShape provides state.settings.iconShape,
@@ -151,7 +158,6 @@ internal fun FlymeFreeformNavHost(
                 onRequestScopes = onRequestScopes,
                 onNavigateToPinnedApps = navigateToPinnedApps,
                 onNavigateToRadialSettings = navigateToRadialSettings,
-                onNavigateToEnvironmentScope = navigateToEnvironmentScope,
                 onNavigateToBlacklist = navigateToBlacklist,
                 onNavigateToZoomOptions = navigateToZoomOptions,
             )
@@ -176,26 +182,9 @@ internal fun FlymeFreeformNavHost(
                 onNavigateToPinnedApps = navigateToPinnedApps,
             )
         }
-        entry<AppRoute.ZoomOptions> {
-            ZoomOptionsScreen(
-                state = state,
-                onBack = popBackStack,
-                onZoomMaxWindowCountChange = onZoomMaxWindowCountChange,
-                onZoomAllowAnyAppChange = onZoomAllowAnyAppChange,
-                onZoomLaunchChange = onZoomLaunchChange,
-                onOutsideTapCloseModeChange = onOutsideTapCloseModeChange,
-                onHandleSwipeUpToMiniEnabledChange = onHandleSwipeUpToMiniEnabledChange,
-            )
-        }
-        entry<AppRoute.EnvironmentScope> {
-            EnvironmentScopeScreen(
-                state = state,
-                onBack = popBackStack,
-                onPauseInLandscapeChange = onPauseInLandscapeChange,
-                onPauseInGameModeChange = onPauseInGameModeChange,
-                onNavigateToBlacklist = navigateToBlacklist,
-            )
-        }
+        entry<AppRoute.ZoomOptions> { zoomOptionsContent() }
+        // 兼容升级前保存的导航状态，旧生效范围路由也显示同一个合并页面。
+        entry<AppRoute.EnvironmentScope> { zoomOptionsContent() }
         entry<AppRoute.Blacklist> {
             BlacklistScreen(
                 state = state,

@@ -42,15 +42,13 @@
     <string name="radial_apps_empty_summary">未固定快捷项，扇形中仅显示“更多”</string>
     <string name="radial_apps_count_summary">已固定 %1$d 项</string>
 
-    <string name="environment_scope_title">生效范围</string>
-    <string name="environment_scope_summary">前台应用、屏幕方向与游戏模式</string>
     <string name="blacklist_title">排除列表</string>
-    <string name="blacklist_summary">排除列表内的应用在前台时暂停模块增强，离开后自动启用</string>
+    <string name="blacklist_summary">这些应用在前台时不呼出扇形；小窗跳转也遵循此列表，保持其原有启动方式</string>
     <string name="blacklist_screen_title">排除列表</string>
     <string name="blacklist_add_action">添加应用</string>
-    <string name="blacklist_add_summary">选择在前台时暂停模块增强的应用</string>
+    <string name="blacklist_add_summary">选择需要排除扇形呼出与小窗跳转的应用</string>
     <string name="blacklist_empty_title">还没有添加应用</string>
-    <string name="blacklist_empty_summary">加入排除列表的应用，在前台时会暂停模块增强（不呼出扇形）</string>
+    <string name="blacklist_empty_summary">这些应用在前台时不呼出扇形，小窗跳转也不会改写其启动方式</string>
     <string name="blacklist_remove_action">移除</string>
     <string name="blacklist_added">已加入</string>
     <string name="verbose_log_title">详细日志</string>
@@ -72,8 +70,8 @@
     <string name="radial_arc_collapse_action">收起圆弧条数</string>
     <string name="radial_keep_open_title">保持挂起</string>
     <string name="radial_keep_open_summary">松手保持扇形菜单，可以继续滑动点选应用</string>
-    <string name="zoom_limit_removed_title">小窗交互</string>
-    <string name="zoom_options_summary">小窗数量、启动场景与窗口操作</string>
+    <string name="zoom_limit_removed_title">小窗设置</string>
+    <string name="zoom_options_summary">排除列表、小窗设置与暂停条件</string>
     <string name="zoom_max_windows_title">小窗数量</string>
     <string name="zoom_max_windows_summary">同时存在的自由浮窗个数；跟随系统时不改写，由系统或其他模块决定</string>
     <string name="zoom_max_windows_follow_system">跟随系统</string>
@@ -92,7 +90,7 @@
     <string name="zoom_allow_any_app_title">解除限制</string>
     <string name="zoom_allow_any_app_summary">原本不支持自由浮窗的应用也能以小窗打开</string>
     <string name="zoom_launch_title">小窗跳转</string>
-    <string name="zoom_launch_summary">在更多场景下使用自由浮窗打开</string>
+    <string name="zoom_launch_summary">在更多场景下使用自由浮窗打开，遵循上方的排除列表</string>
     <string name="handle_swipe_up_to_mini_title">快速上滑</string>
     <string name="handle_swipe_up_to_mini_summary">在普通小窗底部横条快速上滑，切换为迷你小窗</string>
 
@@ -138,9 +136,9 @@
     <string name="about_own_repo_title">项目地址</string>
     <string name="about_own_repo_summary">ZaiLinn/FlymeFreeform</string>
     <string name="pause_in_landscape_title">横屏模式</string>
-    <string name="pause_in_landscape_summary">横屏时暂停模块增强，恢复竖屏后自动启用</string>
+    <string name="pause_in_landscape_summary">横屏时暂停扇形呼出，恢复竖屏后自动启用；小窗功能不受影响</string>
     <string name="pause_in_game_mode_title">游戏模式</string>
-    <string name="pause_in_game_mode_summary">系统进入游戏模式时暂停模块增强，退出后自动启用</string>
+    <string name="pause_in_game_mode_summary">游戏模式下暂停扇形呼出，退出后自动启用；小窗功能不受影响</string>
     <string name="entry_group_tools">工具</string>
     <string name="entry_group_shortcuts">快捷入口</string>
     <string name="entry_group_cloned_apps">分身应用</string>

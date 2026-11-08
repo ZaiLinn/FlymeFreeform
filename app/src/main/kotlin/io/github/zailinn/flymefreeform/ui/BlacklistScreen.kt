@@ -47,7 +47,7 @@ import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 排除列表：这些应用在前台时，角落手势不会呼出扇形菜单。
+ * 排除列表：这些应用在前台时不呼出扇形，小窗跳转也不改写这些应用的启动。
  * 行样式与「扇形应用」页里的列表保持一致。
  */
 @Composable

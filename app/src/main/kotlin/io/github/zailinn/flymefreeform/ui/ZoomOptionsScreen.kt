@@ -3,6 +3,9 @@ package io.github.zailinn.flymefreeform.ui
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.SwipeUp
 import androidx.compose.material.icons.rounded.TouchApp
@@ -16,11 +19,13 @@ import io.github.zailinn.flymefreeform.config.OutsideTapCloseMode
 import io.github.zailinn.flymefreeform.framework.FrameworkConnectionState
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlaySpinnerPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 
 /**
- * 小窗交互的二级页面。
+ * 小窗交互与生效范围的合并页面，排除列表置顶并供小窗跳转共用。
+ * 横屏与游戏模式开关仅暂停扇形呼出。
  *
  * 各项独立挂钩、独立判定，互不依赖：
  * - 窗外关闭：扩展标题层触摸区，接管窗外的点击；
@@ -29,7 +34,7 @@ import top.yukonga.miuix.kmp.preference.SwitchPreference
  * - 启动场景转小窗：在 ActivityStarter 改写通知、控制中心与应用间的启动；
  * - 快速上滑：改写小窗手柄的上滑模式。
  *
- * 除窗外关闭有默认取值外，其余能力默认关闭，由用户按需打开。
+ * 小窗交互各项中，除窗外关闭有默认取值外，其余能力默认关闭，由用户按需打开。
  */
 @Composable
 internal fun ZoomOptionsScreen(
@@ -40,6 +45,9 @@ internal fun ZoomOptionsScreen(
     onZoomLaunchChange: (Boolean) -> Unit,
     onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
     onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
+    onPauseInLandscapeChange: (Boolean) -> Unit,
+    onPauseInGameModeChange: (Boolean) -> Unit,
+    onNavigateToBlacklist: () -> Unit,
 ) {
     val enabled = state.settingsEditable && state.settings.enabled
     val outsideTapModes = OutsideTapCloseMode.entries
@@ -61,6 +69,17 @@ internal fun ZoomOptionsScreen(
         title = stringResource(R.string.zoom_limit_removed_title),
         onBack = onBack,
     ) {
+        item(key = "blacklist") {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                ArrowPreference(
+                    title = stringResource(R.string.blacklist_title),
+                    summary = stringResource(R.string.blacklist_summary),
+                    onClick = onNavigateToBlacklist,
+                    enabled = enabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.Block, enabled) },
+                )
+            }
+        }
         item(key = "options") {
             Card(modifier = Modifier.fillMaxWidth()) {
                 OverlaySpinnerPreference(
@@ -109,6 +128,26 @@ internal fun ZoomOptionsScreen(
                     summary = stringResource(R.string.handle_swipe_up_to_mini_summary),
                     enabled = enabled,
                     startAction = { PreferenceIcon(Icons.Rounded.SwipeUp, enabled) },
+                )
+            }
+        }
+        item(key = "environment") {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                SwitchPreference(
+                    checked = state.settings.pauseInLandscape,
+                    onCheckedChange = onPauseInLandscapeChange,
+                    title = stringResource(R.string.pause_in_landscape_title),
+                    summary = stringResource(R.string.pause_in_landscape_summary),
+                    enabled = enabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.ScreenRotation, enabled) },
+                )
+                SwitchPreference(
+                    checked = state.settings.pauseInGameMode,
+                    onCheckedChange = onPauseInGameModeChange,
+                    title = stringResource(R.string.pause_in_game_mode_title),
+                    summary = stringResource(R.string.pause_in_game_mode_summary),
+                    enabled = enabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.SportsEsports, enabled) },
                 )
             }
         }

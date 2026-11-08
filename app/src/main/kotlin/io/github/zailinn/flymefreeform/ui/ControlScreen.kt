@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountTree
-import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ElectricalServices
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LockOpen
@@ -98,7 +97,6 @@ internal fun ControlScreen(
     onRequestScopes: () -> Unit,
     onNavigateToPinnedApps: () -> Unit,
     onNavigateToRadialSettings: () -> Unit,
-    onNavigateToEnvironmentScope: () -> Unit,
     onNavigateToBlacklist: () -> Unit,
     onNavigateToZoomOptions: () -> Unit,
 ) {
@@ -169,7 +167,6 @@ internal fun ControlScreen(
                             featuresEnabled = featuresEnabled,
                             onNavigateToRadialSettings = onNavigateToRadialSettings,
                             onNavigateToZoomOptions = onNavigateToZoomOptions,
-                            onNavigateToEnvironmentScope = onNavigateToEnvironmentScope,
                         )
                     }
                     item(key = "about") {
@@ -185,13 +182,12 @@ internal fun ControlScreen(
     }
 }
 
-/** 三个配置分组的入口；具体开关在各自的二级页面内。 */
+/** 扇形设置与小窗设置（含排除列表、暂停条件）的入口；具体开关在二级页面内。 */
 @Composable
 private fun EntryCard(
     featuresEnabled: Boolean,
     onNavigateToRadialSettings: () -> Unit,
     onNavigateToZoomOptions: () -> Unit,
-    onNavigateToEnvironmentScope: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         ArrowPreference(
@@ -207,13 +203,6 @@ private fun EntryCard(
             onClick = onNavigateToZoomOptions,
             enabled = featuresEnabled,
             startAction = { PreferenceIcon(Icons.Rounded.LockOpen, featuresEnabled) },
-        )
-        ArrowPreference(
-            title = stringResource(R.string.environment_scope_title),
-            summary = stringResource(R.string.environment_scope_summary),
-            onClick = onNavigateToEnvironmentScope,
-            enabled = featuresEnabled,
-            startAction = { PreferenceIcon(Icons.Rounded.Block, featuresEnabled) },
         )
     }
 }
