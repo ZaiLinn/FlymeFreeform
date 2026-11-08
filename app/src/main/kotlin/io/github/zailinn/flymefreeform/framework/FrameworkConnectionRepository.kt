@@ -1,6 +1,7 @@
 package io.github.zailinn.flymefreeform.framework
 
 import android.annotation.SuppressLint
+import android.app.BroadcastOptions
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -11,6 +12,7 @@ import io.github.zailinn.flymefreeform.config.ModuleSettingsSnapshot
 import io.github.zailinn.flymefreeform.config.OutsideTapCloseMode
 import io.github.zailinn.flymefreeform.config.PinnedTarget
 import io.github.zailinn.flymefreeform.config.PinnedTargetCodec
+import io.github.zailinn.flymefreeform.config.SettingsTransfer
 import java.util.IdentityHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -235,12 +237,8 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 val confirmed = previous.copy(settings = next, isUpdating = false, issue = null)
                 activeConnection = connection.copy(confirmedState = confirmed)
                 mutableState.value = confirmed
-                if (next.pinsSaved != previous.settings.pinsSaved ||
-                    next.pinnedTargets != previous.settings.pinnedTargets ||
-                    next.innerArcTargets != previous.settings.innerArcTargets
-                ) {
-                    notifyPinnedTargetsChanged(next)
-                }
+                // 任何设置变化都推给各 Hook 进程：模块重装后远程配置回调失效，只靠广播热生效。
+                notifyPinnedTargetsChanged(next)
             } else {
                 isolateFailedConnection(connection, previous)
             }
@@ -259,10 +257,17 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 ModuleSettingsSnapshot.encodeInnerArcTargets(settings.innerArcTargets),
             )
             putExtra(ModulePreferences.EXTRA_MODULE_ENABLED, settings.enabled)
+            // 完整快照；上面的旧字段留给尚未重启、仍跑旧版代码的 Hook 进程。
+            putExtra(SettingsTransfer.EXTRA_SETTINGS, SettingsTransfer.toBundle(settings))
         }
+        // 接收端按 sentFromUid 核对发送方；不共享身份时该值为 INVALID_UID，推送会被丢弃，
+        // 只能等 LSPosed 远程配置的变更回调，而模块重装后该回调在 Hook 进程里不再触发。
+        val options = BroadcastOptions.makeBasic().setShareIdentityEnabled(true).toBundle()
         try {
-            context.sendBroadcast(intent.setPackage("android"))
-            context.sendBroadcast(intent.setPackage("com.coloros.smartsidebar"))
+            context.sendBroadcast(intent.setPackage("android"), null, options)
+            context.sendBroadcast(intent.setPackage("com.coloros.smartsidebar"), null, options)
+            context.sendBroadcast(intent.setPackage("com.android.systemui"), null, options)
+            context.sendBroadcast(intent.setPackage("com.android.launcher"), null, options)
         } catch (_: RuntimeException) {
             // Remote preference commit remains authoritative if a target process is unavailable.
         }

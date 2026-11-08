@@ -48,24 +48,7 @@ internal class ColorOsSidebarEntryEndpoint(
             if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
                 sentFromUid != moduleUid()
             ) return
-            val encoded = intent.getStringExtra(ModulePreferences.EXTRA_PINNED_TARGETS) ?: return
-            configuration.override(
-                configuration.snapshot.copy(
-                    enabled = intent.getBooleanExtra(
-                        ModulePreferences.EXTRA_MODULE_ENABLED,
-                        configuration.snapshot.enabled,
-                    ),
-                    pinsSaved = intent.getBooleanExtra(
-                        ModulePreferences.EXTRA_PINS_SAVED,
-                        configuration.snapshot.pinsSaved,
-                    ),
-                    pinnedTargets = PinnedTargetCodec.decodeList(encoded),
-                    innerArcTargets =
-                        io.github.zailinn.flymefreeform.config.ModuleSettingsSnapshot.decodeInnerArcTargets(
-                            intent.getStringArrayListExtra(ModulePreferences.EXTRA_INNER_ARC_TARGETS),
-                        ) ?: configuration.snapshot.innerArcTargets,
-                ),
-            )
+            configuration.applySettingsBroadcast(intent)
         }
     }
 

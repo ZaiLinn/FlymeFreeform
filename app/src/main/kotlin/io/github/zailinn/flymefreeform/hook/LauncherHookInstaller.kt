@@ -235,6 +235,7 @@ internal class LauncherHookInstaller(
     private fun startEnvironment(owner: Context) {
         if (environmentStarted) return
         environmentStarted = true
+        configuration.listenForSettingsBroadcast(owner)
         val start = {
             environmentState.start(owner)
             environmentState.observe {

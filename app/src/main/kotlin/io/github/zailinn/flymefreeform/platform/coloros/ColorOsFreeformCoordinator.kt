@@ -18,7 +18,6 @@ import android.view.WindowManager
 import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.config.ModuleSettingsSnapshot
 import io.github.zailinn.flymefreeform.config.PinnedTarget
-import io.github.zailinn.flymefreeform.config.PinnedTargetCodec
 import io.github.zailinn.flymefreeform.gesture.AdaptiveCornerGestureConfig
 import io.github.zailinn.flymefreeform.gesture.CornerGestureConfig
 import io.github.zailinn.flymefreeform.gesture.CornerGestureEngine
@@ -103,25 +102,7 @@ internal class ColorOsFreeformCoordinator(
                 if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
                     sentFromUid != moduleUid()
                 ) return
-                val encoded = intent.getStringExtra(ModulePreferences.EXTRA_PINNED_TARGETS) ?: return
-                val targets = PinnedTargetCodec.decodeList(encoded)
-                configuration.override(
-                    configuration.snapshot.copy(
-                        enabled = intent.getBooleanExtra(
-                            ModulePreferences.EXTRA_MODULE_ENABLED,
-                            configuration.snapshot.enabled,
-                        ),
-                        pinsSaved = intent.getBooleanExtra(
-                            ModulePreferences.EXTRA_PINS_SAVED,
-                            configuration.snapshot.pinsSaved,
-                        ),
-                        pinnedTargets = targets,
-                        innerArcTargets =
-                            ModuleSettingsSnapshot.decodeInnerArcTargets(
-                                intent.getStringArrayListExtra(ModulePreferences.EXTRA_INNER_ARC_TARGETS),
-                            ) ?: configuration.snapshot.innerArcTargets,
-                    ),
-                )
+                configuration.applySettingsBroadcast(intent)
             }
         }
 

@@ -37,6 +37,7 @@ internal class SystemUiHookInstaller(
                     val result = chain.proceed()
                     val context = chain.thisObject as? Context
                     if (context != null && bound.compareAndSet(false, true)) {
+                        configuration.listenForSettingsBroadcast(context)
                         // 通知点击小窗：改 Bundle（含剥离 remote 转场），让窗口不被横幅压住。
                         NotifBundleHook(module, configuration).install(classLoader)
                         startInputMonitor(context)
