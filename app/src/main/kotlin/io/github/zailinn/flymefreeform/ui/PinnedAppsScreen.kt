@@ -1,5 +1,11 @@
 package io.github.zailinn.flymefreeform.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -23,20 +29,27 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -56,6 +69,7 @@ import io.github.zailinn.flymefreeform.R
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
 import io.github.zailinn.flymefreeform.apps.SidebarCatalogState
 import io.github.zailinn.flymefreeform.apps.SidebarCatalogStatus
+import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
 import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.config.PinnedTarget
 import io.github.zailinn.flymefreeform.config.PinnedTargetCodec
@@ -64,6 +78,7 @@ import io.github.zailinn.flymefreeform.ui.component.TopBarBackdrop
 import io.github.zailinn.flymefreeform.ui.component.captureForTopBar
 import io.github.zailinn.flymefreeform.ui.component.rememberTopBarBackdrop
 import io.github.zailinn.flymefreeform.ui.component.topBarContainerColor
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
@@ -71,6 +86,7 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.TabRowWithContour
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
@@ -93,6 +109,8 @@ internal fun PinnedAppsScreen(
     onCancelCatalog: () -> Unit,
     onBack: () -> Unit,
     onPinnedTargetsChange: (List<PinnedTarget>) -> Unit,
+    onInnerArcTargetsChange: (Int, List<PinnedTarget>) -> Unit,
+    onMoveTargetToArc: (PinnedTarget, Int) -> Unit,
 ) {
     val refreshCatalog by rememberUpdatedState(onRefreshCatalog)
     val cancelCatalog by rememberUpdatedState(onCancelCatalog)
@@ -100,13 +118,58 @@ internal fun PinnedAppsScreen(
         if (state.canChangeSettings) refreshCatalog()
         onPauseOrDispose { cancelCatalog() }
     }
+    // 多圆弧时每圈单独编辑：第 1 圈即默认圆弧，内侧各圈保存在独立的键里。
+    // 减少圆弧条数只是不再显示多出的页签，已保存的固定项不动，再次增加时原样恢复。
+    val arcCount = state.settings.effectiveRadialArcCount
+    var chosenArc by rememberSaveable { mutableIntStateOf(0) }
+    // 圆弧条数减少后，原先选中的页签可能已不存在，此时回到第 1 圈。
+    val pagerState = rememberPagerState(initialPage = chosenArc.coerceIn(0, arcCount - 1)) { arcCount }
+    val selectedArc = pagerState.currentPage.coerceIn(0, arcCount - 1)
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { chosenArc = it }
+    }
+    val scope = rememberCoroutineScope()
+    val arcTargets: List<List<PinnedTarget>> =
+        listOf(state.settings.pinnedTargets) + state.settings.innerArcTargets.take(arcCount - 1)
+    fun pinCapacityOf(arc: Int) = RadialArcPlan.pinCapacity(arc)
+    // 按当前「数量上限」该圈实际能显示几项；固定项超出部分照常保存。
+    fun visibleCapacityOf(arc: Int) =
+        if (arc == 0) {
+            state.settings.radialMaxItems
+        } else {
+            RadialArcPlan.innerCapacities(arcCount, state.settings.radialMaxItems).getOrElse(arc - 1) { 0 }
+        }
+    val pinCapacity = pinCapacityOf(selectedArc)
+    val fillSource = ModulePreferences.coerceRadialFillSource(state.settings.radialFillSource)
+    fun changeTargets(arc: Int, targets: List<PinnedTarget>) {
+        if (arc == 0) onPinnedTargetsChange(targets) else onInnerArcTargetsChange(arc - 1, targets)
+    }
+    /**
+     * 已固定在其他圈的条目 → 所在圈下标（0 为默认圆弧）。含当前未启用的圈：
+     * 圆弧条数减少后那几圈的固定项仍保存着，移过来时一并移除，避免条数恢复后同一条目出现在两圈。
+     */
+    val allArcTargets: List<List<PinnedTarget>> = listOf(state.settings.pinnedTargets) + state.settings.innerArcTargets
+    val otherArcOf: Map<PinnedTarget, Int> =
+        buildMap {
+            allArcTargets.forEachIndexed { arc, targets ->
+                if (arc != selectedArc) targets.forEach { putIfAbsent(it, arc) }
+            }
+        }
     val allEntries = remember(apps, sidebarCatalog.entries) { apps + sidebarCatalog.entries }
     var pickerOpen by remember { mutableStateOf(false) }
     var pickerQuery by remember { mutableStateOf("") }
-    // 拖动或增删后的本地顺序；远端配置回读同步前以它为准，避免列表闪回旧顺序
-    var localOrder by remember { mutableStateOf<List<PinnedTarget>?>(null) }
+    // 拖动或增删后的本地顺序（按圈）；远端配置回读同步前以它为准，避免列表闪回旧顺序
+    val localOrders = remember { mutableStateMapOf<Int, List<PinnedTarget>>() }
     LaunchedEffect(state.canChangeSettings, state.issue) {
-        if (!state.canChangeSettings || state.issue != null) localOrder = null
+        if (!state.canChangeSettings || state.issue != null) localOrders.clear()
+    }
+    LaunchedEffect(arcTargets) {
+        localOrders.keys.filter { arc -> localOrders[arc] == arcTargets.getOrNull(arc) }.forEach(localOrders::remove)
+    }
+    fun displayedOf(arc: Int): List<PinnedTarget> = localOrders[arc] ?: arcTargets.getOrElse(arc) { emptyList() }
+    fun commitTargets(arc: Int, targets: List<PinnedTarget>) {
+        localOrders[arc] = targets
+        changeTargets(arc, targets)
     }
     var draggingComponent by remember { mutableStateOf<PinnedTarget?>(null) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
@@ -128,7 +191,7 @@ internal fun PinnedAppsScreen(
                     if (isWide) {
                         SmallTopAppBar(
                             title = title,
-                            subtitle = stringResource(R.string.radial_apps_screen_subtitle),
+                            subtitle = stringResource(R.string.radial_apps_screen_subtitle, pinCapacity),
                             color = topBarColor,
                             navigationIcon = navigationIcon,
                             scrollBehavior = scrollBehavior,
@@ -136,7 +199,7 @@ internal fun PinnedAppsScreen(
                     } else {
                         TopAppBar(
                             title = title,
-                            subtitle = stringResource(R.string.radial_apps_screen_subtitle),
+                            subtitle = stringResource(R.string.radial_apps_screen_subtitle, pinCapacity),
                             color = topBarColor,
                             navigationIcon = navigationIcon,
                             scrollBehavior = scrollBehavior,
@@ -150,138 +213,242 @@ internal fun PinnedAppsScreen(
             val safeEnd = innerPadding.calculateEndPadding(direction)
             val safeWidth = (maxWidth - safeStart - safeEnd).coerceAtLeast(0.dp)
             val side = maxOf(ScreenHorizontalMargin, (safeWidth - ScreenContentMaxWidth) / 2)
-            val pinned = state.settings.pinnedTargets
-            LaunchedEffect(pinned) {
-                if (localOrder != null && pinned == localOrder) localOrder = null
-            }
-            val displayed = localOrder ?: pinned
             val appByComponent = remember(allEntries) { allEntries.associateBy(SelectableEntry::target) }
-            Box(modifier = Modifier.fillMaxSize().captureForTopBar(backdrop)) {
+            val horizontalStart = safeStart + side
+            val horizontalEnd = safeEnd + side
+            val arcPage: @Composable (Int) -> Unit = { arc ->
+                val pinned = arcTargets.getOrElse(arc) { emptyList() }
+                val displayed = displayedOf(arc)
+                val arcPinCapacity = pinCapacityOf(arc)
+                val visibleCapacity = visibleCapacityOf(arc)
+                // 正在播放移除动画的条目：动画结束后才真正写入配置，其余行随之自然上移。
+                val removing = remember { mutableStateMapOf<PinnedTarget, Boolean>() }
+                // 已出现过的条目不再播放进场动画；之后新增（含移除后重新添加）的才展开进场。
+                val shown = remember { HashSet(displayed) }
                 LazyColumn(
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .consumeWindowInsets(innerPadding)
-                        .scrollEndHaptic()
-                        .overScrollVertical()
-                        .nestedScroll(scrollBehavior.nestedScrollConnection),
-                contentPadding =
-                    PaddingValues(
-                        start = safeStart + side,
-                        top = innerPadding.calculateTopPadding() + ScreenTopSpacing,
-                        end = safeEnd + side,
-                        bottom = innerPadding.calculateBottomPadding() + ScreenBottomSpacing,
-                    ),
-                overscrollEffect = null,
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .scrollEndHaptic()
+                            .overScrollVertical()
+                            .nestedScroll(scrollBehavior.nestedScrollConnection),
+                    contentPadding =
+                        PaddingValues(
+                            start = horizontalStart,
+                            top = if (arcCount > 1) 12.dp else innerPadding.calculateTopPadding() + ScreenTopSpacing,
+                            end = horizontalEnd,
+                            bottom = innerPadding.calculateBottomPadding() + ScreenBottomSpacing,
+                        ),
+                    overscrollEffect = null,
                 ) {
-                item(key = "radial_options") {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        BasicComponent(
-                            title = stringResource(R.string.select_apps_action),
-                            startAction = { PreferenceIcon(Icons.Rounded.Add, state.settingsEditable) },
-                            onClick = {
-                                pickerQuery = ""
-                                pickerOpen = true
-                            },
-                            onClickLabel = stringResource(R.string.select_apps_action),
-                            role = Role.Button,
-                            enabled = state.settingsEditable,
-                        )
-                    }
-                }
-                item(key = "added_intro") {
-                    Text(
-                        text =
-                            stringResource(
-                                R.string.added_apps_title,
-                                displayed.size,
-                                ModulePreferences.MAX_PINNED_APPS,
-                            ),
-                        modifier =
-                            Modifier
-                                .padding(start = 16.dp, bottom = 8.dp)
-                                .semantics { heading() },
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        style = MiuixTheme.textStyles.subtitle,
-                    )
-                }
-                item(key = "added") {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        displayed.forEachIndexed { index, component ->
-                            key(PinnedTargetCodec.encode(component)) {
-                                AddedAppRow(
-                                    component = component,
-                                    app = appByComponent[component],
-                                    index = index,
-                                    enabled = state.settingsEditable,
-                                    draggable = state.settingsEditable && displayed.size > 1,
-                                    dragging = draggingComponent == component,
-                                    dragOffsetY = dragOffsetY,
-                                    rowHeightPx = rowHeightPx,
-                                    onRowHeight = { height ->
-                                        if (rowHeightPx != height) rowHeightPx = height
-                                    },
-                                    onRemove = {
-                                        val updated = displayed.filterNot { it == component }
-                                        localOrder = updated
-                                        onPinnedTargetsChange(updated)
-                                    },
-                                    onDragStart = {
-                                        localOrder = displayed
-                                        draggingComponent = component
-                                        dragOffsetY = 0f
-                                    },
-                                    onDrag = { deltaY ->
-                                        if (rowHeightPx > 0f) {
-                                            dragOffsetY += deltaY
-                                            val order =
-                                                (localOrder ?: displayed).toMutableList()
-                                            var current = order.indexOf(component)
-                                            while (current >= 0 &&
-                                                dragOffsetY > rowHeightPx / 2 &&
-                                                current < order.size - 1
-                                            ) {
-                                                order.add(current + 1, order.removeAt(current))
-                                                dragOffsetY -= rowHeightPx
-                                                current++
-                                            }
-                                            while (current >= 0 &&
-                                                dragOffsetY < -rowHeightPx / 2 &&
-                                                current > 0
-                                            ) {
-                                                order.add(current - 1, order.removeAt(current))
-                                                dragOffsetY += rowHeightPx
-                                                current--
-                                            }
-                                            localOrder = order
-                                        }
-                                    },
-                                    onDragEnd = {
-                                        val order = localOrder
-                                        draggingComponent = null
-                                        dragOffsetY = 0f
-                                        if (order != null) {
-                                            if (order == pinned) {
-                                                localOrder = null
-                                            } else {
-                                                onPinnedTargetsChange(order)
-                                            }
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                        if (displayed.isEmpty()) {
+                    item(key = "radial_options") {
+                        Card(modifier = Modifier.fillMaxWidth()) {
                             BasicComponent(
-                                title = stringResource(R.string.added_apps_empty),
-                                summary = stringResource(R.string.added_apps_empty_summary),
-                                enabled = false,
+                                title = stringResource(R.string.select_apps_action),
+                                startAction = { PreferenceIcon(Icons.Rounded.Add, state.settingsEditable) },
+                                onClick = {
+                                    pickerQuery = ""
+                                    pickerOpen = true
+                                },
+                                onClickLabel = stringResource(R.string.select_apps_action),
+                                role = Role.Button,
+                                enabled = state.settingsEditable,
                             )
                         }
                     }
-                }
+                    if (arc > 0 || displayed.size > visibleCapacity) {
+                        item(key = "arc_intro") {
+                            Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
+                                if (arc > 0) {
+                                    Text(
+                                        text =
+                                            stringResource(
+                                                when {
+                                                    displayed.isNotEmpty() -> R.string.inner_arc_custom_intro
+                                                    fillSource == ModulePreferences.RADIAL_FILL_FREQUENT ->
+                                                        R.string.inner_arc_auto_intro_frequent
+                                                    fillSource == ModulePreferences.RADIAL_FILL_NONE ->
+                                                        R.string.inner_arc_auto_intro_none
+                                                    else -> R.string.inner_arc_auto_intro
+                                                },
+                                            ),
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        style = MiuixTheme.textStyles.body2,
+                                    )
+                                }
+                                if (displayed.size > visibleCapacity) {
+                                    Text(
+                                        text = stringResource(R.string.arc_capacity_limited, visibleCapacity),
+                                        modifier = Modifier.padding(top = 4.dp),
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        style = MiuixTheme.textStyles.body2,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    item(key = "added_intro") {
+                        Text(
+                            text =
+                                stringResource(
+                                    R.string.added_apps_title,
+                                    displayed.size,
+                                    arcPinCapacity,
+                                ),
+                            modifier =
+                                Modifier
+                                    .padding(start = 16.dp, top = 12.dp, bottom = 8.dp)
+                                    .semantics { heading() },
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            style = MiuixTheme.textStyles.subtitle,
+                        )
+                    }
+                    item(key = "added") {
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            displayed.forEachIndexed { index, component ->
+                                key(PinnedTargetCodec.encode(component)) {
+                                    val visibility =
+                                        remember { MutableTransitionState(component in shown) }
+                                    visibility.targetState = removing[component] != true
+                                    SideEffect { shown += component }
+                                    // 收起动画播完再写入配置：列表高度随行一起收拢，下方各行平滑上移。
+                                    if (removing[component] == true && visibility.isIdle && !visibility.currentState) {
+                                        LaunchedEffect(component) {
+                                            removing.remove(component)
+                                            shown -= component
+                                            commitTargets(arc, displayedOf(arc).filterNot { it == component })
+                                        }
+                                    }
+                                    AnimatedVisibility(
+                                        visibleState = visibility,
+                                        enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+                                        exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
+                                    ) {
+                                        AddedAppRow(
+                                            component = component,
+                                            app = appByComponent[component],
+                                            index = index,
+                                            enabled = state.settingsEditable && removing[component] != true,
+                                            draggable =
+                                                state.settingsEditable && displayed.size > 1 && removing.isEmpty(),
+                                            dragging = draggingComponent == component,
+                                            reordering = draggingComponent != null,
+                                            dragOffsetY = dragOffsetY,
+                                            rowHeightPx = rowHeightPx,
+                                            onRowHeight = { height ->
+                                                if (rowHeightPx != height) rowHeightPx = height
+                                            },
+                                            onRemove = { removing[component] = true },
+                                            onDragStart = {
+                                                localOrders[arc] = displayed
+                                                draggingComponent = component
+                                                dragOffsetY = 0f
+                                            },
+                                            onDrag = { deltaY ->
+                                                if (rowHeightPx > 0f) {
+                                                    dragOffsetY += deltaY
+                                                    val order = displayedOf(arc).toMutableList()
+                                                    var current = order.indexOf(component)
+                                                    while (current >= 0 &&
+                                                        dragOffsetY > rowHeightPx / 2 &&
+                                                        current < order.size - 1
+                                                    ) {
+                                                        order.add(current + 1, order.removeAt(current))
+                                                        dragOffsetY -= rowHeightPx
+                                                        current++
+                                                    }
+                                                    while (current >= 0 &&
+                                                        dragOffsetY < -rowHeightPx / 2 &&
+                                                        current > 0
+                                                    ) {
+                                                        order.add(current - 1, order.removeAt(current))
+                                                        dragOffsetY += rowHeightPx
+                                                        current--
+                                                    }
+                                                    localOrders[arc] = order
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                val order = localOrders[arc]
+                                                draggingComponent = null
+                                                dragOffsetY = 0f
+                                                if (order != null) {
+                                                    if (order == pinned) {
+                                                        localOrders.remove(arc)
+                                                    } else {
+                                                        changeTargets(arc, order)
+                                                    }
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            AnimatedVisibility(
+                                visible = displayed.isEmpty(),
+                                enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+                                exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
+                            ) {
+                                BasicComponent(
+                                    title =
+                                        stringResource(
+                                            when {
+                                                arc == 0 -> R.string.added_apps_empty
+                                                fillSource == ModulePreferences.RADIAL_FILL_FREQUENT ->
+                                                    R.string.inner_arc_empty_frequent
+                                                fillSource == ModulePreferences.RADIAL_FILL_NONE -> R.string.inner_arc_empty_none
+                                                else -> R.string.inner_arc_empty
+                                            },
+                                        ),
+                                    summary =
+                                        stringResource(
+                                            if (arc > 0) {
+                                                R.string.inner_arc_empty_summary
+                                            } else {
+                                                R.string.added_apps_empty_summary
+                                            },
+                                        ),
+                                    enabled = false,
+                                )
+                            }
+                        }
+                    }
                 }
             }
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .captureForTopBar(backdrop)
+                        .consumeWindowInsets(innerPadding),
+            ) {
+                if (arcCount > 1) {
+                    TabRowWithContour(
+                        tabs = List(arcCount) { stringResource(R.string.radial_arc_tab, it + 1) },
+                        selectedTabIndex = selectedArc,
+                        onTabSelected = { arc -> scope.launch { pagerState.animateScrollToPage(arc) } },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    start = horizontalStart,
+                                    top = innerPadding.calculateTopPadding() + ScreenTopSpacing,
+                                    end = horizontalEnd,
+                                ),
+                    )
+                }
+                // 左右滑动切换圈；拖动排序期间锁定，避免竖向拖动被横向翻页抢走。
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize(),
+                    userScrollEnabled = draggingComponent == null,
+                    beyondViewportPageCount = 1,
+                    key = { it },
+                ) { arc ->
+                    arcPage(arc)
+                }
+            }
+            val displayed = displayedOf(selectedArc)
             // 勾选状态跟随 displayed，sheet 内增删即时可见
             val addedSet = remember(displayed) { displayed.toSet() }
             val candidates =
@@ -369,9 +536,21 @@ internal fun PinnedAppsScreen(
                                 }
                                 items(entries, key = { PinnedTargetCodec.encode(it.target) }) { app ->
                                     val added = app.target in addedSet
+                                    val sourceArc = if (added) null else otherArcOf[app.target]
+                                    val full = displayed.size >= pinCapacity
+                                    val summary =
+                                        when {
+                                            sourceArc == null -> app.packageName
+                                            full -> stringResource(R.string.pinned_in_other_arc_full, sourceArc + 1)
+                                            sourceArc >= arcCount ->
+                                                stringResource(R.string.pinned_in_hidden_arc_move, sourceArc + 1)
+                                            allArcTargets[sourceArc].size == 1 ->
+                                                stringResource(R.string.pinned_move_empties_arc, sourceArc + 1)
+                                            else -> stringResource(R.string.pinned_in_other_arc_move, sourceArc + 1)
+                                        }
                                     BasicComponent(
                                         title = app.label,
-                                        summary = app.packageName,
+                                        summary = summary,
                                         startAction = { AppIcon(app) },
                                         endActions =
                                             if (added) {
@@ -387,29 +566,32 @@ internal fun PinnedAppsScreen(
                                                 null
                                             },
                                         onClick = {
-                                            val updated =
-                                                if (added) {
-                                                    displayed.filterNot { it == app.target }
-                                                } else {
-                                                    (displayed + app.target)
-                                                        .take(ModulePreferences.MAX_PINNED_APPS)
+                                            when {
+                                                added -> commitTargets(selectedArc, displayed.filterNot { it == app.target })
+                                                sourceArc != null -> {
+                                                    // 两圈的本地顺序同时更新，配置回读前两页都显示移动后的结果。
+                                                    localOrders[selectedArc] = displayed + app.target
+                                                    if (sourceArc < arcCount) {
+                                                        localOrders[sourceArc] = displayedOf(sourceArc).filterNot { it == app.target }
+                                                    }
+                                                    onMoveTargetToArc(app.target, selectedArc)
                                                 }
-                                            localOrder = updated
-                                            onPinnedTargetsChange(updated)
+                                                else -> commitTargets(selectedArc, (displayed + app.target).take(pinCapacity))
+                                            }
                                         },
                                         onClickLabel =
                                             stringResource(
-                                                if (added) {
-                                                    R.string.remove_named_app_action
-                                                } else {
-                                                    R.string.add_named_app_action
+                                                when {
+                                                    added -> R.string.remove_named_app_action
+                                                    sourceArc != null -> R.string.move_named_app_action
+                                                    else -> R.string.add_named_app_action
                                                 },
                                                 app.label,
                                             ),
                                         role = Role.Button,
                                         enabled =
                                             state.settingsEditable &&
-                                                (added || displayed.size < ModulePreferences.MAX_PINNED_APPS) &&
+                                                (added || !full) &&
                                                 (added || app.target is PinnedTarget.App || sidebarCatalog.status == SidebarCatalogStatus.Ready),
                                     )
                                 }
@@ -430,6 +612,7 @@ private fun AddedAppRow(
     enabled: Boolean,
     draggable: Boolean,
     dragging: Boolean,
+    reordering: Boolean,
     dragOffsetY: Float,
     rowHeightPx: Float,
     onRowHeight: (Float) -> Unit,
@@ -438,11 +621,12 @@ private fun AddedAppRow(
     onDrag: (Float) -> Unit,
     onDragEnd: () -> Unit,
 ) {
-    // 被拖行换位时，其余行先从旧视觉位置吸附再弹簧归位，形成实时让位动画
+    // 被拖行换位时，其余行先从旧视觉位置吸附再弹簧归位，形成实时让位动画。
+    // 只在拖动排序期间这样做：增删引起的下标变化由行本身的展开 / 收起动画带动，再叠加位移会抖一下。
     val offsetAnim = remember { Animatable(0f) }
     var restIndex by remember { mutableIntStateOf(index) }
     LaunchedEffect(index, dragging) {
-        if (dragging || index == restIndex) {
+        if (dragging || !reordering || index == restIndex) {
             restIndex = index
         } else {
             offsetAnim.snapTo(offsetAnim.value + (restIndex - index) * rowHeightPx)

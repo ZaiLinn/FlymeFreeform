@@ -98,6 +98,19 @@ internal class FrameworkConnectionRepository(private val context: Context) {
             it.copy(radialMaxItems = ModulePreferences.coerceRadialMaxItems(count))
         }
 
+    fun setRadialMultiArcEnabled(enabled: Boolean) =
+        updateSettings { it.copy(radialMultiArcEnabled = enabled) }
+
+    fun setRadialArcCount(count: Int) =
+        updateSettings {
+            it.copy(radialArcCount = ModulePreferences.coerceRadialArcCount(count))
+        }
+
+    fun setRadialFillSource(source: Int) =
+        updateSettings {
+            it.copy(radialFillSource = ModulePreferences.coerceRadialFillSource(source))
+        }
+
     fun setZoomMaxWindowCount(count: Int) =
         updateSettings {
             it.copy(
@@ -120,6 +133,40 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 pinsSaved = true,
                 pinnedTargets =
                     io.github.zailinn.flymefreeform.config.PinnedTargetCodec.normalize(components),
+            )
+        }
+
+    /** 第 [innerIndex] 条内侧圆弧（0 对应第 2 条）的固定项；空列表表示用最近使用补满。 */
+    fun setInnerArcTargets(innerIndex: Int, targets: List<PinnedTarget>) =
+        updateSettings { settings ->
+            if (innerIndex !in settings.innerArcTargets.indices) return@updateSettings settings
+            val normalized =
+                io.github.zailinn.flymefreeform.config.PinnedTargetCodec.normalize(
+                    targets,
+                    io.github.zailinn.flymefreeform.gesture.RadialArcPlan.pinCapacity(innerIndex + 1),
+                )
+            settings.copy(
+                innerArcTargets =
+                    settings.innerArcTargets.mapIndexed { index, current ->
+                        if (index == innerIndex) normalized else current
+                    },
+            )
+        }
+
+    /**
+     * 把已固定在其他圈的 [target] 移到第 [toArc] 圈（0 为默认圆弧）。两圈在同一次提交里改，
+     * 只写一次配置、只发一次广播，system_server 不会读到条目同时在两圈或都不在的中间状态。
+     */
+    fun moveTargetToArc(target: PinnedTarget, toArc: Int) =
+        updateSettings { settings ->
+            val arcs = listOf(settings.pinnedTargets) + settings.innerArcTargets
+            val moved =
+                io.github.zailinn.flymefreeform.config.ArcPins.move(arcs, target, toArc)
+                    ?: return@updateSettings settings
+            settings.copy(
+                pinsSaved = settings.pinsSaved || toArc == 0,
+                pinnedTargets = moved.first(),
+                innerArcTargets = moved.drop(1),
             )
         }
 
@@ -172,7 +219,8 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 activeConnection = connection.copy(confirmedState = confirmed)
                 mutableState.value = confirmed
                 if (next.pinsSaved != previous.settings.pinsSaved ||
-                    next.pinnedTargets != previous.settings.pinnedTargets
+                    next.pinnedTargets != previous.settings.pinnedTargets ||
+                    next.innerArcTargets != previous.settings.innerArcTargets
                 ) {
                     notifyPinnedTargetsChanged(next)
                 }
@@ -189,6 +237,10 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 PinnedTargetCodec.encodeList(settings.pinnedTargets),
             )
             putExtra(ModulePreferences.EXTRA_PINS_SAVED, settings.pinsSaved)
+            putStringArrayListExtra(
+                ModulePreferences.EXTRA_INNER_ARC_TARGETS,
+                ModuleSettingsSnapshot.encodeInnerArcTargets(settings.innerArcTargets),
+            )
             putExtra(ModulePreferences.EXTRA_MODULE_ENABLED, settings.enabled)
         }
         try {

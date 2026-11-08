@@ -58,8 +58,13 @@ internal fun FlymeFreeformNavHost(
     onZoomLaunchChange: (Boolean) -> Unit,
     onRadialKeepOpenChange: (Boolean) -> Unit,
     onRadialMaxItemsChange: (Int) -> Unit,
+    onRadialMultiArcEnabledChange: (Boolean) -> Unit,
+    onRadialArcCountChange: (Int) -> Unit,
+    onRadialFillSourceChange: (Int) -> Unit,
     onRequestScopes: () -> Unit,
     onPinnedTargetsChange: (List<PinnedTarget>) -> Unit,
+    onInnerArcTargetsChange: (Int, List<PinnedTarget>) -> Unit,
+    onMoveTargetToArc: (PinnedTarget, Int) -> Unit,
     onBlacklistChange: (List<String>) -> Unit,
 ) {
     val backStack = rememberNavBackStack<AppRoute>(AppRoute.Settings)
@@ -148,6 +153,9 @@ internal fun FlymeFreeformNavHost(
                 onCornerTriggerRangeChange = onCornerTriggerRangeChange,
                 onRadialHitRangeChange = onRadialHitRangeChange,
                 onRadialMaxItemsChange = onRadialMaxItemsChange,
+                onRadialMultiArcEnabledChange = onRadialMultiArcEnabledChange,
+                onRadialArcCountChange = onRadialArcCountChange,
+                onRadialFillSourceChange = onRadialFillSourceChange,
                 onRadialKeepOpenChange = onRadialKeepOpenChange,
                 onNavigateToPinnedApps = navigateToPinnedApps,
             )
@@ -198,6 +206,8 @@ internal fun FlymeFreeformNavHost(
                 onCancelCatalog = onCancelCatalog,
                 onBack = popBackStack,
                 onPinnedTargetsChange = onPinnedTargetsChange,
+                onInnerArcTargetsChange = onInnerArcTargetsChange,
+                onMoveTargetToArc = onMoveTargetToArc,
             )
         }
     }

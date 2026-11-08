@@ -50,8 +50,13 @@ class MainActivity : ComponentActivity() {
                     onZoomLaunchChange = repository::setZoomLaunch,
                     onRadialKeepOpenChange = repository::setRadialKeepOpen,
                     onRadialMaxItemsChange = repository::setRadialMaxItems,
+                    onRadialMultiArcEnabledChange = repository::setRadialMultiArcEnabled,
+                    onRadialArcCountChange = repository::setRadialArcCount,
+                    onRadialFillSourceChange = repository::setRadialFillSource,
                     onRequestScopes = repository::requestMissingScopes,
                     onPinnedTargetsChange = repository::setPinnedTargets,
+                    onInnerArcTargetsChange = repository::setInnerArcTargets,
+                    onMoveTargetToArc = repository::moveTargetToArc,
                     onBlacklistChange = repository::setBlacklistPackages,
                 )
             }

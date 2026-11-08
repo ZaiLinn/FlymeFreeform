@@ -53,6 +53,9 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.unit.dp
+import io.github.zailinn.flymefreeform.gesture.CornerSide
+import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
+import io.github.zailinn.flymefreeform.gesture.RadialGeometry
 import io.github.zailinn.flymefreeform.BuildConfig
 import io.github.zailinn.flymefreeform.R
 import io.github.zailinn.flymefreeform.config.OutsideTapCloseMode
@@ -63,10 +66,7 @@ import io.github.zailinn.flymefreeform.ui.component.TopBarBackdrop
 import io.github.zailinn.flymefreeform.ui.component.captureForTopBar
 import io.github.zailinn.flymefreeform.ui.component.rememberTopBarBackdrop
 import io.github.zailinn.flymefreeform.ui.component.topBarContainerColor
-import kotlin.math.PI
-import kotlin.math.cos
 import kotlin.math.roundToInt
-import kotlin.math.sin
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
@@ -415,12 +415,13 @@ internal fun CornerRangePreview(
 
 /**
  * 拖动「命中范围」时的实时预览：按扇形真实几何画出每个槽位的命中圆与图标圆点，
- * 让用户直接看到命中圈有多大、相邻圈是否已经连成一片。
+ * 让用户直接看到命中圈有多大、相邻圈是否已经连成一片。多圆弧时内侧圆弧一并画出。
  */
 @Composable
 internal fun HitRangePreview(
     hitRangeDp: Int,
-    itemCount: Int,
+    arcItemCounts: List<Int>,
+    arcCount: Int,
     leftEnabled: Boolean,
     rightEnabled: Boolean,
 ) {
@@ -430,24 +431,27 @@ internal fun HitRangePreview(
         val basePixel = minOf(size.width, size.height) / RadialBaseShortEdgeDp
         val arcRadius = RadialBaseArcRadiusDp * basePixel
         val iconRadius = RadialBaseIconDiameterDp * basePixel / 2f
+        val arcSpacing =
+            RadialArcPlan.arcSpacingDp(arcCount, RadialBaseArcRadiusDp, RadialBaseIconDiameterDp) * basePixel
         val hitRadius = hitRangeDp.dp.toPx()
         val strokeWidth = 2.dp.toPx()
         val dash = PathEffect.dashPathEffect(floatArrayOf(7.dp.toPx(), 5.dp.toPx()))
-        val slots = itemCount.coerceIn(1, 7)
-        val step = RadialSpanDegrees / slots
 
-        fun drawSide(originX: Float, originY: Float, mirrored: Boolean, enabled: Boolean) {
+        fun drawSide(side: CornerSide, enabled: Boolean) {
             val color = if (enabled) activeColor else inactiveColor
-            for (index in 0 until slots) {
-                val slot = slots - index - 1
-                val leftDegrees = -RadialSafeDegrees - (slot + 0.5f) * step
-                val degrees = if (mirrored) -180f - leftDegrees else leftDegrees
-                val radians = degrees * PI.toFloat() / 180f
-                val center =
-                    Offset(
-                        x = originX + cos(radians) * arcRadius,
-                        y = originY + sin(radians) * arcRadius,
-                    )
+            val layout =
+                RadialGeometry.layout(
+                    side = side,
+                    width = size.width,
+                    height = size.height,
+                    radius = arcRadius,
+                    itemCount = arcItemCounts.first() + 1,
+                    innerArcCounts = arcItemCounts.drop(1),
+                    arcSpacing = arcSpacing,
+                    iconDiameter = iconRadius * 2f,
+                )
+            layout.itemCenters.forEach { point ->
+                val center = Offset(point.x, point.y)
                 drawCircle(
                     color = color.copy(alpha = if (enabled) 0.10f else 0.04f),
                     radius = hitRadius,
@@ -467,8 +471,8 @@ internal fun HitRangePreview(
             }
         }
 
-        drawSide(originX = 0f, originY = size.height, mirrored = false, enabled = leftEnabled)
-        drawSide(originX = size.width, originY = size.height, mirrored = true, enabled = rightEnabled)
+        drawSide(CornerSide.Left, leftEnabled)
+        drawSide(CornerSide.Right, rightEnabled)
     }
 }
 
@@ -582,8 +586,6 @@ private const val OWN_REPO_URL = "https://github.com/ZaiLinn/FlymeFreeform"
 private const val RadialBaseShortEdgeDp = 400f
 private const val RadialBaseArcRadiusDp = 242f
 private const val RadialBaseIconDiameterDp = 44f
-private const val RadialSpanDegrees = 84f
-private const val RadialSafeDegrees = 3f
 
 internal val ScreenHorizontalMargin = 12.dp
 internal val ScreenContentMaxWidth = 600.dp
