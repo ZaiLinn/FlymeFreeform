@@ -15,10 +15,7 @@ internal class StarterLockProbe(
         if (attempted) return
         synchronized(this) {
             if (attempted) return
-            val global = runCatching {
-                val service = field(starter, "mService")
-                field(service, "mGlobalLock")
-            }.getOrNull()
+            val global = runCatching { findGlobalLock(starter) }.getOrNull()
             lock = WeakReference(global)
             attempted = true
             if (global == null) log("STARTER_LOCK_PROBE_UNAVAILABLE")
@@ -29,6 +26,35 @@ internal class StarterLockProbe(
     internal fun attachLock(value: Any) { lock = WeakReference(value); attempted = true }
 
     fun holdsWmLock(): Boolean? = lock.get()?.let { Thread.holdsLock(it) }
+
+    /**
+     * 控制中心等未知锁序查询的放行条件：探针确认未持锁时放行；确认持锁时禁止。
+     * 探针不可用时只在最外层 execute 放行（AOSP 在进入 mGlobalLock 之前调用 execute 与 resolveActivity），
+     * 与改造前「每次直接查询」相比只收紧不放宽，避免探针失效时控制中心入口整体失效。
+     */
+    fun mayQueryOutsideLock(outerExecute: Boolean): Boolean = when (holdsWmLock()) {
+        false -> true
+        true -> false
+        null -> outerExecute
+    }
+
+    /** 依次尝试 ATMS 的常见持有路径，再按类型在 ATMS 上查找 WindowManagerGlobalLock。 */
+    private fun findGlobalLock(starter: Any?): Any? {
+        val services = listOf(field(starter, "mService"), field(field(starter, "mSupervisor"), "mService"),
+            field(field(starter, "mController"), "mService")).filterNotNull()
+        services.forEach { service -> field(service, "mGlobalLock")?.let { return it } }
+        services.forEach { service ->
+            var type: Class<*>? = service.javaClass
+            while (type != null) {
+                type.declaredFields.firstOrNull { it.type.name == GLOBAL_LOCK_CLASS }?.let {
+                    it.isAccessible = true
+                    return it.get(service)
+                }
+                type = type.superclass
+            }
+        }
+        return null
+    }
 
     fun assertOffStarter(name: String) {
         if (holdsWmLock() != true) return
@@ -54,5 +80,6 @@ internal class StarterLockProbe(
     companion object {
         /** 仅限 system_server 内共享探针；不用于跨进程通信。 */
         @Volatile var current: StarterLockProbe? = null
+        private const val GLOBAL_LOCK_CLASS = "com.android.server.wm.WindowManagerGlobalLock"
     }
 }

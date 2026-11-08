@@ -36,7 +36,7 @@ internal class ActivityStarterZoomInjector(
 
     fun install(classLoader: ClassLoader) {
         StarterLockProbe.current = lockProbe
-        queries.warmUp()
+        // 不在安装时预热：此时 AMS 尚未就绪，registerReceiver 抛 NPE；首次启动经过钩子时再预热。
         val starter =
             try {
                 classLoader.loadClass(ACTIVITY_STARTER_CLASS)
@@ -101,7 +101,7 @@ internal class ActivityStarterZoomInjector(
                         runCatching {
                             val values = controlCenter.get()?.second
                             val request = chain.thisObject
-                            if (values != null && request != null && lockProbe.holdsWmLock() == false) {
+                            if (values != null && request != null && lockProbe.mayQueryOutsideLock(outerExecute = true)) {
                                 val intent = readField(request, "intent") as? Intent
                                 val target = intent?.component?.packageName ?: intent?.getPackage()
                                 if (target != null) values[target] = queries.readControlCenter(target)
@@ -151,11 +151,11 @@ internal class ActivityStarterZoomInjector(
     private fun environmentFor(input: StarterInput): LaunchEnvironment = object : LaunchEnvironment by platform {
         override val enabled get() = input.userId >= 0 && platform.enabled
         override fun resolveImplicitTarget(): String? = input.snapshot.resolvedTarget
-        /** AOSP execute 在进入 mGlobalLock 前调用；实际以探针为准，未知或持锁时禁止查询。 */
+        /** AOSP execute 在进入 mGlobalLock 前调用；以探针为准，持锁时禁止，探针不可用时仅最外层 execute 查询。 */
         override fun fromControlCenter(pkg: String): Boolean {
             val observation = controlCenter.get()?.takeIf { it.first === input.starter }?.second ?: return false
             observation[pkg]?.let { return it }
-            if (lockProbe.holdsWmLock() != false) return false
+            if (!lockProbe.mayQueryOutsideLock(input.snapshot.stage == "execute")) return false
             return queries.readControlCenter(pkg).also { observation[pkg] = it }
         }
     }
@@ -197,7 +197,7 @@ internal class ActivityStarterZoomInjector(
                             effects.isUserVisible(input.userId) },
                         start = { zoom ->
                             preempting.set(true)
-                            try { replay.start(if (zoom) ZoomLaunchSpec.bundle(input.options) else input.options) }
+                            try { replay.start(if (zoom) ZoomLaunchSpec.bundle(input.options) else null) }
                             finally { preempting.remove() }
                         },
                         current = { pendingReopens.current(key, ticket) },

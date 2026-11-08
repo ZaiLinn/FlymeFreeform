@@ -44,22 +44,38 @@ internal class StarterSideEffects(
 
     fun canCloseZoomTask(): Boolean = ZoomTaskCloser.closer != null
 
-    /** 仅在已投递的重开事务中查询；资料用户也须处于可见状态才允许关窗。 */
-    fun isUserVisible(userId: Int): Boolean = runCatching {
+    private val visibilityFallbackLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 仅在已投递的重开事务中查询；资料用户也须处于可见状态才允许关窗。
+     * UserManager.isUserVisible 反射失败时退回「是否为当前前台用户」，资料用户因此只走原参数启动；
+     * 否则反射失败会让每次重开都静默退回原参数启动，看起来像修复失效。
+     */
+    fun isUserVisible(userId: Int): Boolean {
         lockProbe.assertOffStarter("reopen_user_visibility")
-        val context = systemContext() ?: return false
-        val user = android.os.UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId)
-        val owner = Context::class.java.getMethod("createContextAsUser", android.os.UserHandle::class.java,
-            Int::class.javaPrimitiveType).invoke(context, user, 0) as Context
-        val manager = owner.getSystemService(android.os.UserManager::class.java) ?: return false
-        manager.javaClass.getMethod("isUserVisible").invoke(manager) == true
-    }.getOrDefault(false)
+        val visible = runCatching {
+            val context = systemContext() ?: return false
+            val user = android.os.UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId)
+            val owner = Context::class.java.getMethod("createContextAsUser", android.os.UserHandle::class.java,
+                Int::class.javaPrimitiveType).invoke(context, user, 0) as Context
+            val manager = owner.getSystemService(android.os.UserManager::class.java) ?: return false
+            manager.javaClass.getMethod("isUserVisible").invoke(manager) as Boolean
+        }.onFailure {
+            if (visibilityFallbackLogged.compareAndSet(false, true)) log("ZOOM_REOPEN_USER_VISIBILITY_FALLBACK", it)
+        }.getOrNull()
+        if (visible != null) return visible
+        return runCatching {
+            android.app.ActivityManager::class.java.getMethod("getCurrentUser").invoke(null) == userId
+        }.getOrDefault(false)
+    }
 
     fun reopenInZoom(target: String, userId: Int, delayMs: Long, valid: () -> Boolean,
         start: (Boolean) -> Boolean, current: () -> Boolean, complete: (Boolean, Boolean) -> Unit) {
+        // 校验失败会退回原参数启动（不开小窗），单独记一行，便于和关窗、启动失败区分。
+        val checked = { valid().also { if (!it) ModuleLog.debug(TAG) { "ZOOM_REOPEN_INVALID_" + target } } }
         post("reopen_close") {
             io.github.zailinn.flymefreeform.hook.launch.decision.DeferredLaunch.run(
-                delayMs, valid, { ZoomTaskCloser.closer?.invoke(target, userId) == true },
+                delayMs, checked, { ZoomTaskCloser.closer?.invoke(target, userId) == true },
                 { delay, action -> postDelayed("reopen_start", delay, action) }, start,
                 { closed, zoomStarted, started ->
                     complete(started, zoomStarted)

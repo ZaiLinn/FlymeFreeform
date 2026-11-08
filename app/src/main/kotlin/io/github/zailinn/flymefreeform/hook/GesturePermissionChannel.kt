@@ -47,7 +47,10 @@ internal class GesturePermissionClient(private val changed: () -> Unit) {
     }
 }
 
-/** 只在主线程发布；前台回调在 WM 锁内仅投递，广播不得在该回调中直接执行。 */
+/**
+ * 只在主线程发布；前台回调在 WM 锁内仅投递，广播不得在该回调中直接执行。
+ * 焦点与前台变化很频繁，许可值不变时不重复广播；客户端请求、用户切换和启动时强制发送。
+ */
 internal class GesturePermissionPublisher(
     private val context: Context,
     private val handler: Handler,
@@ -55,6 +58,7 @@ internal class GesturePermissionPublisher(
     private val failure: (Throwable) -> Unit,
 ) {
     private var switchingUser = false
+    private var lastSent: Boolean? = null
 
     fun start() {
       try {
@@ -62,25 +66,27 @@ internal class GesturePermissionPublisher(
             override fun onReceive(owner: Context?, intent: Intent?) {
                 if (intent?.action == "android.intent.action.USER_SWITCHED") {
                     switchingUser = true
-                    publish()
+                    publish(force = true)
                     return
                 }
                 val client = intent?.getStringExtra(CLIENT) ?: return
                 if (client !in CLIENTS || sentFromUid < 0) return
                 val packages = runCatching { context.packageManager.getPackagesForUid(sentFromUid) }.getOrNull().orEmpty()
-                if (client in packages) publish()
+                if (client in packages) publish(force = true)
             }
         }, IntentFilter(REQUEST).apply { addAction("android.intent.action.USER_SWITCHED") },
             null, handler, Context.RECEIVER_EXPORTED)
-        publish()
+        publish(force = true)
       } catch (error: Exception) { failure(error) }
     }
 
     fun foregroundChanged() { switchingUser = false; publish() }
 
-    fun publish() {
+    @Synchronized
+    fun publish(force: Boolean = false) {
         try {
             val allowed = !switchingUser && policy()
+            if (!force && allowed == lastSent) return
             val all = UserHandle::class.java.getField("ALL").get(null) as UserHandle
             CLIENTS.forEach { target ->
                 Context::class.java.getMethod("sendBroadcastAsUser", Intent::class.java,
@@ -88,6 +94,7 @@ internal class GesturePermissionPublisher(
                     .invoke(context, Intent(STATE).setPackage(target).putExtra(ALLOWED, allowed)
                         .addFlags(Intent.FLAG_RECEIVER_FOREGROUND), all, null, options())
             }
+            lastSent = allowed
         } catch (error: Exception) { failure(error) }
     }
 }

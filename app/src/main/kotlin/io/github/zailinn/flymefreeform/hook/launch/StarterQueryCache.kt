@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import io.github.zailinn.flymefreeform.apps.CacheRevision
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -13,6 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * PM 查询可能进入 AMS，只在专用工作线程执行；starter 只读缓存，未知按原路径放行。
  * 先登记包变化监听，再预热；失效与写回按同一代数校验，拒绝旧查询重新填入缓存。
  * 启动目标只取当前 Request 的实际解析结果，不用跨用户、跨启动的 Intent 解析缓存。
+ *
+ * 缓存按包名记录「是否第三方」与主用户 UID，两者与当前用户无关；查询带 MATCH_UNINSTALLED_PACKAGES，
+ * 只装在工作资料 / 分身里的应用也能命中。用户解锁、切换时只增量补充，不清空，
+ * 否则重新预热的几百毫秒里所有应用都按「未知」处理，链接不开小窗、SystemUI 来源校验失败。
  */
 internal class StarterQueryCache(private val effects: StarterSideEffects, private val onUserChanged: () -> Unit) {
     private data class App(val uid: Int, val thirdParty: Boolean)
@@ -32,7 +37,7 @@ internal class StarterQueryCache(private val effects: StarterSideEffects, privat
                 register(context)
                 val generation = revision.current()
                 val pm = context.packageManager
-                @Suppress("DEPRECATION") val installed = pm.getInstalledApplications(0)
+                @Suppress("DEPRECATION") val installed = pm.getInstalledApplications(PackageManager.MATCH_UNINSTALLED_PACKAGES)
                 val loaded = installed.associate { it.packageName to App(it.uid, it.flags and ApplicationInfo.FLAG_SYSTEM == 0) }
                 if (!revision.commit(generation) { apps.putAll(loaded) }) return@background
                 installed.map { it.uid }.distinct().forEach { uid ->
@@ -65,7 +70,7 @@ internal class StarterQueryCache(private val effects: StarterSideEffects, privat
         context.registerReceiver(object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == "android.intent.action.USER_SWITCHED") onUserChanged()
-                revision.invalidate { apps.clear(); owners.clear() }
+                // 新用户可能带来只装在该用户里的应用；补充预热，保留现有条目。
                 initialized = false
                 warmUp()
             }
@@ -81,7 +86,8 @@ internal class StarterQueryCache(private val effects: StarterSideEffects, privat
         if (apps.containsKey(pkg)) return
         query("app:$pkg") {
             val generation = revision.current()
-            val info = StarterSideEffects.systemContext()?.packageManager?.getApplicationInfo(pkg, 0) ?: return@query
+            val info = StarterSideEffects.systemContext()?.packageManager
+                ?.getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES) ?: return@query
             revision.commit(generation) { apps[pkg] = App(info.uid, info.flags and ApplicationInfo.FLAG_SYSTEM == 0) }
         }
     }

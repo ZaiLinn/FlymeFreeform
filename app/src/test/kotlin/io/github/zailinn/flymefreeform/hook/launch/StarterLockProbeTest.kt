@@ -42,4 +42,25 @@ class StarterLockProbeTest {
         assertNull(missing.holdsWmLock())
         assertEquals(listOf("STARTER_LOCK_PROBE_UNAVAILABLE"), logs)
     }
+
+    private class Supervisor(val mService: Service)
+    private class NestedStarter(val mSupervisor: Supervisor)
+    @Test fun discoversLockThroughSupervisor() {
+        val lock = Any()
+        val probe = StarterLockProbe({ 0L }) { fail(it) }
+        probe.attach(NestedStarter(Supervisor(Service(lock))))
+        synchronized(lock) { assertEquals(true, probe.holdsWmLock()) }
+    }
+
+    @Test fun unknownProbeOnlyAllowsOuterExecute() {
+        val unknown = StarterLockProbe({ 0L }) {}
+        unknown.attach(Any())
+        assertTrue(unknown.mayQueryOutsideLock(outerExecute = true))
+        assertFalse(unknown.mayQueryOutsideLock(outerExecute = false))
+        val lock = Any()
+        val known = StarterLockProbe({ 0L }) {}
+        known.attachLock(lock)
+        assertTrue(known.mayQueryOutsideLock(outerExecute = false))
+        synchronized(lock) { assertFalse(known.mayQueryOutsideLock(outerExecute = true)) }
+    }
 }
