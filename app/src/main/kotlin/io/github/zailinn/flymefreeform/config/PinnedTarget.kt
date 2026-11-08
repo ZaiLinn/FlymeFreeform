@@ -64,16 +64,17 @@ internal object PinnedTargetCodec {
         return PinnedTarget.App(parts[0], name)
     }
 
-    fun decodeList(value: String): List<PinnedTarget> =
-        if (value.length > MAX_TEXT) emptyList() else normalize(value.lineSequence().mapNotNull(::decode).toList())
+    fun decodeList(value: String, limit: Int = ModulePreferences.MAX_PINNED_APPS): List<PinnedTarget> =
+        if (value.length > MAX_TEXT) emptyList() else normalize(value.lineSequence().mapNotNull(::decode).toList(), limit)
 
     fun decodeLegacy(value: String): List<PinnedTarget> =
         if (value.length > MAX_TEXT) emptyList() else
             normalize(value.lineSequence().map { it.trim() }.mapNotNull(::decodeApp).toList())
 
-    fun normalize(targets: List<PinnedTarget>): List<PinnedTarget> =
+    fun normalize(targets: List<PinnedTarget>, limit: Int = ModulePreferences.MAX_PINNED_APPS): List<PinnedTarget> =
         targets.asSequence().mapNotNull { decode(encode(it)) }.distinct()
-            .take(ModulePreferences.MAX_PINNED_APPS).toList()
+            .take(limit.coerceAtLeast(0)).toList()
 
-    fun encodeList(targets: List<PinnedTarget>): String = normalize(targets).joinToString("\n", transform = ::encode)
+    fun encodeList(targets: List<PinnedTarget>, limit: Int = ModulePreferences.MAX_PINNED_APPS): String =
+        normalize(targets, limit).joinToString("\n", transform = ::encode)
 }

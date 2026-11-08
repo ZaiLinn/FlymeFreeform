@@ -28,4 +28,37 @@ class AppSelectionPolicyTest {
             AppSelectionPolicy.radialItems(true, emptyList(), listOf("recent"), listOf("other"), { it }, 6),
         )
     }
+
+    @Test
+    fun innerArcsUseCustomPinsOrFallBackToRecents() {
+        val arcs =
+            AppSelectionPolicy.innerArcItems(
+                capacities = listOf(5, 4, 3),
+                customPins = listOf(emptyList(), listOf("x", "outer", "y"), emptyList()),
+                customized = listOf(false, true, false),
+                recent = listOf("outer", "r1", "r2", "x", "r3", "r4", "r5", "r6", "r7", "r8"),
+                used = listOf("outer"),
+                identity = { it },
+            )
+        // 第 2 圈未自定义：最近使用补满，跳过外圈已有的与第 3 圈固定的条目。
+        assertEquals(listOf("r1", "r2", "r3", "r4", "r5"), arcs[0])
+        // 第 3 圈自定义：只放固定项，外圈已有的跳过，放不满就空着。
+        assertEquals(listOf("x", "y"), arcs[1])
+        // 第 4 圈未自定义：接着补最近使用。
+        assertEquals(listOf("r6", "r7", "r8"), arcs[2])
+    }
+
+    @Test
+    fun customizedArcWithOnlyMissingPinsStaysEmpty() {
+        val arcs =
+            AppSelectionPolicy.innerArcItems(
+                capacities = listOf(5),
+                customPins = listOf(emptyList<String>()),
+                customized = listOf(true),
+                recent = listOf("r1"),
+                used = emptyList(),
+                identity = { it },
+            )
+        assertEquals(listOf(emptyList<String>()), arcs)
+    }
 }

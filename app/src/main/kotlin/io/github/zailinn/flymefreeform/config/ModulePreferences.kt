@@ -7,6 +7,8 @@ internal object ModulePreferences {
         "io.github.zailinn.flymefreeform.action.PINNED_TARGETS_CHANGED"
     const val EXTRA_PINNED_TARGETS = "pinned_targets"
     const val EXTRA_PINS_SAVED = "pins_saved"
+    /** 内侧圆弧（第 2～4 条）的固定项，按圈序排列的已编码列表。 */
+    const val EXTRA_INNER_ARC_TARGETS = "inner_arc_targets"
     const val EXTRA_MODULE_ENABLED = "module_enabled"
     const val KEY_MODULE_ENABLED = "enabled"
     const val KEY_LEFT_CORNER_ENABLED = "corner_left_enabled"
@@ -15,6 +17,13 @@ internal object ModulePreferences {
     const val KEY_RADIAL_HIT_RANGE_DP = "radial_hit_range_dp"
     const val KEY_PINNED_TARGETS = "corner_targets_v2"
     const val KEY_CORNER_PINS = "corner_pins_v1"
+    /**
+     * 第 2～4 条圆弧各自的固定项，与默认圆弧的 [KEY_PINNED_TARGETS] 分开保存。
+     * 减少圆弧条数只是不显示多出的圆弧，这些键保持原样，再次增加时恢复原来的固定项。
+     * 键不存在或列表为空表示该圈用最近使用的应用补满。
+     */
+    val KEY_INNER_ARC_TARGETS: List<String> =
+        listOf("corner_targets_arc2_v1", "corner_targets_arc3_v1", "corner_targets_arc4_v1")
     const val KEY_OUTSIDE_TAP_CLOSE_MODE = "outside_tap_close_mode_v1"
     const val KEY_HANDLE_SWIPE_UP_TO_MINI_ENABLED = "handle_swipe_up_to_mini_enabled"
     const val KEY_PAUSE_IN_LANDSCAPE = "pause_in_landscape"
@@ -32,6 +41,9 @@ internal object ModulePreferences {
     const val LEGACY_KEY_ZOOM_LAUNCH_INTER_APP = "zoom_launch_inter_app"
     const val KEY_RADIAL_KEEP_OPEN = "radial_keep_open"
     const val KEY_RADIAL_MAX_ITEMS = "radial_max_items"
+    const val KEY_RADIAL_MULTI_ARC_ENABLED = "radial_multi_arc_enabled"
+    const val KEY_RADIAL_ARC_COUNT = "radial_arc_count"
+    const val KEY_RADIAL_FILL_SOURCE = "radial_fill_source"
     const val DEFAULT_ENABLED = false
     const val DEFAULT_CORNER_ENABLED = true
     const val DEFAULT_CORNER_TRIGGER_RANGE_DP = 84
@@ -47,12 +59,25 @@ internal object ModulePreferences {
     const val DEFAULT_ZOOM_ALLOW_ANY_APP = false
     const val DEFAULT_ZOOM_LAUNCH = false
     const val DEFAULT_RADIAL_KEEP_OPEN = false
-    /** 扇形最多能放几个应用（收藏上限同值）。须定义在引用它的常量之前。 */
+    /** 默认圆弧固定项的上限。内侧圆弧各自的上限见 RadialArcPlan.pinCapacity。 */
     const val MAX_PINNED_APPS = 6
-    /** 扇形同时显示的条目数：1–6，默认 6。 */
+    /** 默认圆弧同时显示的条目数：1–6，默认 6。 */
     const val DEFAULT_RADIAL_MAX_ITEMS = 6
     const val MIN_RADIAL_MAX_ITEMS = 1
-    const val MAX_RADIAL_MAX_ITEMS = MAX_PINNED_APPS
+    const val MAX_RADIAL_MAX_ITEMS = 6
+    const val DEFAULT_RADIAL_MULTI_ARC_ENABLED = false
+    /** 多圆弧打开后的圆弧条数：1–4，默认 2。 */
+    const val DEFAULT_RADIAL_ARC_COUNT = 2
+    const val MIN_RADIAL_ARC_COUNT = 1
+    const val MAX_RADIAL_ARC_COUNT = 4
+    /**
+     * 扇形空位的补位来源：最近使用（最近任务列表）、最常使用（近 7 天前台时长），
+     * 或不补位（未自定义的内圈留空，默认圆弧仍用最近使用补位）。
+     */
+    const val RADIAL_FILL_RECENT = 0
+    const val RADIAL_FILL_FREQUENT = 1
+    const val RADIAL_FILL_NONE = 2
+    const val DEFAULT_RADIAL_FILL_SOURCE = RADIAL_FILL_RECENT
     const val MIN_CORNER_TRIGGER_RANGE_DP = 24
     const val MAX_CORNER_TRIGGER_RANGE_DP = 160
     const val MIN_RADIAL_HIT_RANGE_DP = 40
@@ -69,6 +94,12 @@ internal object ModulePreferences {
 
     fun coerceRadialMaxItems(value: Int): Int =
         value.coerceIn(MIN_RADIAL_MAX_ITEMS, MAX_RADIAL_MAX_ITEMS)
+
+    fun coerceRadialArcCount(value: Int): Int =
+        value.coerceIn(MIN_RADIAL_ARC_COUNT, MAX_RADIAL_ARC_COUNT)
+
+    fun coerceRadialFillSource(value: Int): Int =
+        if (value in RADIAL_FILL_RECENT..RADIAL_FILL_NONE) value else DEFAULT_RADIAL_FILL_SOURCE
 
     /** 黑名单包名：换行分隔，逐条校验，最多 200 条。 */
     fun decodePackages(raw: String?): List<String> =

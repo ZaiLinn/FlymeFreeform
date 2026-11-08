@@ -1,6 +1,7 @@
 package io.github.zailinn.flymefreeform.config
 
 import android.content.SharedPreferences
+import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
 
 internal data class ModuleSettingsSnapshot(
     val enabled: Boolean = ModulePreferences.DEFAULT_ENABLED,
@@ -32,7 +33,25 @@ internal data class ModuleSettingsSnapshot(
     /** 扇形呼出后未选择任何条目时保持显示，不自动收起。 */
     val radialKeepOpen: Boolean = ModulePreferences.DEFAULT_RADIAL_KEEP_OPEN,
     val radialMaxItems: Int = ModulePreferences.DEFAULT_RADIAL_MAX_ITEMS,
+    /** 扇形多圆弧：默认圆弧以内再向内收拢若干条圆弧，放更多快捷项。 */
+    val radialMultiArcEnabled: Boolean = ModulePreferences.DEFAULT_RADIAL_MULTI_ARC_ENABLED,
+    /** 多圆弧打开时的圆弧条数（含默认圆弧），1–4。 */
+    val radialArcCount: Int = ModulePreferences.DEFAULT_RADIAL_ARC_COUNT,
+    /** 扇形空位的补位来源，取值见 ModulePreferences.RADIAL_FILL_*。 */
+    val radialFillSource: Int = ModulePreferences.DEFAULT_RADIAL_FILL_SOURCE,
+    /**
+     * 第 2～4 条圆弧各自的固定项（下标 0 对应第 2 条）。空列表表示该圈用最近使用的应用补满。
+     * 与圆弧条数无关，始终保存三份。
+     */
+    val innerArcTargets: List<List<PinnedTarget>> = EMPTY_INNER_ARC_TARGETS,
 ) {
+    /** 默认圆弧与所有内侧圆弧的固定项，用于启动前核对「目标确实被固定过」。 */
+    val allPinnedTargets: List<PinnedTarget>
+        get() = pinnedTargets + innerArcTargets.flatten()
+
+    /** 当前生效的圆弧条数：多圆弧关闭时恒为 1。 */
+    val effectiveRadialArcCount: Int
+        get() = if (radialMultiArcEnabled) ModulePreferences.coerceRadialArcCount(radialArcCount) else 1
 
     fun isBlacklisted(packageName: String?): Boolean =
         packageName != null && blacklistPackages.any { it == packageName }
@@ -63,6 +82,15 @@ internal data class ModuleSettingsSnapshot(
                 ModulePreferences.KEY_RADIAL_MAX_ITEMS,
                 ModulePreferences.coerceRadialMaxItems(radialMaxItems),
             )
+            .putBoolean(ModulePreferences.KEY_RADIAL_MULTI_ARC_ENABLED, radialMultiArcEnabled)
+            .putInt(
+                ModulePreferences.KEY_RADIAL_ARC_COUNT,
+                ModulePreferences.coerceRadialArcCount(radialArcCount),
+            )
+            .putInt(
+                ModulePreferences.KEY_RADIAL_FILL_SOURCE,
+                ModulePreferences.coerceRadialFillSource(radialFillSource),
+            )
             .putString(
                 ModulePreferences.KEY_BLACKLIST_PACKAGES,
                 blacklistPackages.joinToString("\n"),
@@ -92,10 +120,42 @@ internal data class ModuleSettingsSnapshot(
             editor.remove(ModulePreferences.KEY_PINNED_TARGETS)
         }
         editor.remove(ModulePreferences.KEY_CORNER_PINS)
+        ModulePreferences.KEY_INNER_ARC_TARGETS.forEachIndexed { index, key ->
+            val targets = innerArcTargets.getOrNull(index).orEmpty()
+            if (targets.isEmpty()) {
+                editor.remove(key)
+            } else {
+                editor.putString(
+                    key,
+                    PinnedTargetCodec.encodeList(targets, RadialArcPlan.pinCapacity(index + 1)),
+                )
+            }
+        }
         return editor
     }
 
     companion object {
+        val EMPTY_INNER_ARC_TARGETS: List<List<PinnedTarget>> =
+            List(RadialArcPlan.MAX_INNER_ARCS) { emptyList() }
+
+        /** 广播里的内侧圆弧列表：每圈一行编码文本，缺省或格式不符时返回 null。 */
+        fun decodeInnerArcTargets(encoded: List<String>?): List<List<PinnedTarget>>? {
+            if (encoded == null || encoded.size != RadialArcPlan.MAX_INNER_ARCS) return null
+            return encoded.mapIndexed { index, value ->
+                PinnedTargetCodec.decodeList(value, RadialArcPlan.pinCapacity(index + 1))
+            }
+        }
+
+        fun encodeInnerArcTargets(targets: List<List<PinnedTarget>>): ArrayList<String> =
+            ArrayList(
+                List(RadialArcPlan.MAX_INNER_ARCS) { index ->
+                    PinnedTargetCodec.encodeList(
+                        targets.getOrNull(index).orEmpty(),
+                        RadialArcPlan.pinCapacity(index + 1),
+                    )
+                },
+            )
+
         fun readFrom(preferences: SharedPreferences): ModuleSettingsSnapshot {
             val enabled =
                 preferences.getBoolean(
@@ -194,6 +254,31 @@ internal data class ModuleSettingsSnapshot(
                             ModulePreferences.DEFAULT_RADIAL_MAX_ITEMS,
                         ),
                     ),
+                radialMultiArcEnabled = preferences.getBoolean(
+                    ModulePreferences.KEY_RADIAL_MULTI_ARC_ENABLED,
+                    ModulePreferences.DEFAULT_RADIAL_MULTI_ARC_ENABLED,
+                ),
+                radialArcCount =
+                    ModulePreferences.coerceRadialArcCount(
+                        preferences.getInt(
+                            ModulePreferences.KEY_RADIAL_ARC_COUNT,
+                            ModulePreferences.DEFAULT_RADIAL_ARC_COUNT,
+                        ),
+                    ),
+                radialFillSource =
+                    ModulePreferences.coerceRadialFillSource(
+                        preferences.getInt(
+                            ModulePreferences.KEY_RADIAL_FILL_SOURCE,
+                            ModulePreferences.DEFAULT_RADIAL_FILL_SOURCE,
+                        ),
+                    ),
+                innerArcTargets =
+                    ModulePreferences.KEY_INNER_ARC_TARGETS.mapIndexed { index, key ->
+                        PinnedTargetCodec.decodeList(
+                            preferences.getString(key, "").orEmpty(),
+                            RadialArcPlan.pinCapacity(index + 1),
+                        )
+                    },
             )
         }
 

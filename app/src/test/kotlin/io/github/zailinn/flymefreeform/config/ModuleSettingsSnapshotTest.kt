@@ -89,6 +89,61 @@ class ModuleSettingsSnapshotTest {
     }
 
     @Test
+    fun innerArcPinsSurviveArcCountChangesAndRoundTrip() {
+        val preferences = InMemoryPreferences()
+        val arc2 = (1..7).map { PinnedTarget.App("com.arc2.app$it", "com.arc2.app$it.Main") }
+        val arc4 = listOf(PinnedTarget.App("com.arc4", "com.arc4.Main"))
+        ModuleSettingsSnapshot(
+            radialMultiArcEnabled = true,
+            radialArcCount = 4,
+            innerArcTargets = listOf(arc2, emptyList(), arc4),
+        ).writeTo(preferences.edit()).commit()
+
+        // 减到 2 条圆弧：第 3、4 圈不显示，但存储不动。
+        val reduced = ModuleSettingsSnapshot.readFrom(preferences).copy(radialArcCount = 2)
+        reduced.writeTo(preferences.edit()).commit()
+        val restored = ModuleSettingsSnapshot.readFrom(preferences).copy(radialArcCount = 4)
+
+        assertEquals(arc2.take(5), restored.innerArcTargets[0])
+        assertEquals(emptyList<PinnedTarget>(), restored.innerArcTargets[1])
+        assertEquals(arc4, restored.innerArcTargets[2])
+        assertFalse(preferences.contains(ModulePreferences.KEY_INNER_ARC_TARGETS[1]))
+        assertEquals(arc2.take(5) + arc4, restored.allPinnedTargets)
+    }
+
+    @Test
+    fun radialFillSourceRoundTripsAndRejectsUnknownValues() {
+        val preferences = InMemoryPreferences()
+        assertEquals(
+            ModulePreferences.RADIAL_FILL_RECENT,
+            ModuleSettingsSnapshot.readFrom(preferences).radialFillSource,
+        )
+        ModuleSettingsSnapshot(radialFillSource = ModulePreferences.RADIAL_FILL_NONE)
+            .writeTo(preferences.edit()).commit()
+        assertEquals(
+            ModulePreferences.RADIAL_FILL_NONE,
+            ModuleSettingsSnapshot.readFrom(preferences).radialFillSource,
+        )
+        preferences.edit().putInt(ModulePreferences.KEY_RADIAL_FILL_SOURCE, 9).commit()
+        assertEquals(
+            ModulePreferences.DEFAULT_RADIAL_FILL_SOURCE,
+            ModuleSettingsSnapshot.readFrom(preferences).radialFillSource,
+        )
+    }
+
+    @Test
+    fun innerArcBroadcastEncodingRoundTrips() {
+        val targets = listOf(
+            listOf(PinnedTarget.App("com.a", "com.a.Main")),
+            emptyList(),
+            listOf(PinnedTarget.Sidebar(PinnedTarget.Kind.Tool, "tool", 0)),
+        )
+        val encoded = ModuleSettingsSnapshot.encodeInnerArcTargets(targets)
+        assertEquals(targets, ModuleSettingsSnapshot.decodeInnerArcTargets(encoded))
+        assertEquals(null, ModuleSettingsSnapshot.decodeInnerArcTargets(arrayListOf("only one")))
+    }
+
+    @Test
     fun pauseSwitchesRoundTripIndependently() {
         for (landscape in listOf(false, true)) {
             for (game in listOf(false, true)) {
