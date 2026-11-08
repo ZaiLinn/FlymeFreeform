@@ -7,6 +7,7 @@ import android.util.TypedValue
 import android.view.Menu
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import androidx.core.view.isNotEmpty
 import io.github.zailinn.flymefreeform.window.AllAppsPanelGeometry
@@ -89,6 +90,7 @@ internal class ColorOsAllAppsContent(
     private var letterTargets: Map<Char, Int> = emptyMap()
     /** 已为索引条让出右侧空间的列表，避免重复加内边距。 */
     private var paddedRecycler: View? = null
+    private var insetBeforeDraw: ViewTreeObserver.OnPreDrawListener? = null
     private val getLabel = getEntry.returnType.getMethod("getLabel")
 
     init {
@@ -562,6 +564,38 @@ internal class ColorOsAllAppsContent(
         val inset = (INDEX_BAR_INSET_DP * context.resources.displayMetrics.density).toInt()
         recycler.setPadding(recycler.paddingLeft, recycler.paddingTop, recycler.paddingRight + inset, recycler.paddingBottom)
         paddedRecycler = recycler
+        // laidOut=true 且之后没有 PANEL_INDEX_INSET_BEFORE_DRAW，说明列表已按无内边距画过，图标会左移；用于设备上核对。
+        panelLog("PANEL_INDEX_INSET laidOut=" + recycler.isLaidOut)
+    }
+
+    /**
+     * 建卡片时列表往往还没挂上本面板的 adapter，[reserveIndexInset] 找不到目标；
+     * adapter 通常和列表首次布局在同一帧挂上，之后才轮到逐帧摆索引条，那时再补内边距就晚了一帧。
+     * 这里在每帧绘制前检查，一旦找到列表就补内边距并取消这一帧，重新布局后再画，
+     * 屏幕上不会出现未预留宽度的那一帧。
+     */
+    private fun reserveIndexInsetBeforeDraw(surface: View) {
+        val listener = object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (closed || paddedRecycler != null) {
+                    removeIndexInsetBeforeDraw(surface)
+                    return true
+                }
+                val recycler = recyclerView(exact = true) ?: return true
+                reserveIndexInset(recycler)
+                removeIndexInsetBeforeDraw(surface)
+                panelLog("PANEL_INDEX_INSET_BEFORE_DRAW")
+                return false
+            }
+        }
+        insetBeforeDraw = listener
+        surface.viewTreeObserver.addOnPreDrawListener(listener)
+    }
+
+    private fun removeIndexInsetBeforeDraw(surface: View) {
+        val listener = insetBeforeDraw ?: return
+        insetBeforeDraw = null
+        surface.viewTreeObserver.takeIf { it.isAlive }?.removeOnPreDrawListener(listener)
     }
 
     private fun isAppTitle(item: Any?): Boolean =
@@ -663,7 +697,10 @@ internal class ColorOsAllAppsContent(
             }
         }
         card = surface
-        if (indexBar != null) reserveIndexInset()
+        if (indexBar != null) {
+            reserveIndexInset()
+            if (paddedRecycler == null) reserveIndexInsetBeforeDraw(surface)
+        }
         // adapter 可能先于卡片绑定，此时索引条还不存在；卡片建好后补算一次。
         if (indexBar != null && boundAdapter != null) refreshAlphabet()
         return surface
@@ -734,6 +771,7 @@ internal class ColorOsAllAppsContent(
                 blurView = null
                 sidebarBlur.close()
                 blur = null
+                card?.let(::removeIndexInsetBeforeDraw)
                 card = null
                 indexBar = null
                 letterTargets = emptyMap()
