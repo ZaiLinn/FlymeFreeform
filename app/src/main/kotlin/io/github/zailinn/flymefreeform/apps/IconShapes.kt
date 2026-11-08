@@ -70,6 +70,22 @@ internal object IconShapes {
         return reference.extractAlpha()
     }
 
+    /**
+     * 与 [maskFrom] 相同的模板，但裁到不透明本体，四周不留透明边。
+     * 用于自绘与应用图标同形的底板（扇形「更多」），按目标直径直接铺满即可。
+     */
+    fun bodyMaskFrom(reference: Bitmap): Bitmap? {
+        val mask = maskFrom(reference) ?: return null
+        val width = reference.width
+        val height = reference.height
+        val pixels = IntArray(width * height).also { reference.getPixels(it, 0, width, 0, 0, width, height) }
+        val bounds = squareBounds(width, height) { x, y -> pixels[y * width + x] ushr 24 } ?: return mask
+        if (bounds.width() == width && bounds.height() == height) return mask
+        return Bitmap.createBitmap(mask, bounds.left, bounds.top, bounds.width(), bounds.height()).also {
+            if (it !== mask) mask.recycle()
+        }
+    }
+
     /** 把条目本体铺进模板的包围盒，再按模板的 alpha 裁切；输出与模板同尺寸。 */
     private fun fitToMask(source: Bitmap, mask: Bitmap): Bitmap {
         val maskPixels = IntArray(mask.width * mask.height)

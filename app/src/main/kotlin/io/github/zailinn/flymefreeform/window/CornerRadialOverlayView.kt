@@ -47,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -80,6 +81,7 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import io.github.zailinn.flymefreeform.apps.IconShapes
 import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.gesture.CornerSide
 import io.github.zailinn.flymefreeform.gesture.RadialArcPlan
@@ -149,6 +151,8 @@ internal class CornerRadialOverlayView(
     private var catalog = AppCatalogSnapshot()
     private val radialClipPath = Path()
     private val radialImages = mutableStateOf<List<RadialImage>>(emptyList())
+    /** 方形图标时「更多」底板的外形模板（取自扇形里的应用图标）；圆形或取不到时为 null。 */
+    private val morePlateMask = mutableStateOf<ImageBitmap?>(null)
     /** 面板图标：开场时已画好的直接放入，其余由格子出现在视野里时按需请求（见 AppCatalogSnapshot.panelIconLoader）。 */
     private val panelImages = mutableStateMapOf<io.github.zailinn.flymefreeform.config.PinnedTarget, ImageBitmap>()
     private var side = CornerSide.Right
@@ -234,6 +238,7 @@ internal class CornerRadialOverlayView(
         // 只替换同一批应用的图像，不在滑选途中交换目标或重置入场动画。
         if (catalog.radialApps.map { it.target } != next.radialApps.map { it.target }) return
         radialImages.value = next.radialApps.map(::RadialImage)
+        morePlateMask.value = MorePlateMasks.of(next)
     }
 
     fun begin(
@@ -259,6 +264,7 @@ internal class CornerRadialOverlayView(
         latestX = x
         latestY = y
         radialImages.value = catalog.radialApps.map(::RadialImage)
+        morePlateMask.value = MorePlateMasks.of(catalog)
         panelImages.clear()
         catalog.panelApps.forEach { entry ->
             if (!PanelIconPlaceholder.isPlaceholder(entry.icon)) panelImages[entry.target] = entry.icon.asImageBitmap()
@@ -761,7 +767,7 @@ internal class CornerRadialOverlayView(
                 if (index < catalog.radialApps.size) {
                     image?.let { drawSystemImage(it.icon, centerX, centerY, iconSize, contentAlpha) }
                 } else {
-                    drawMoreItem(centerX, centerY, diameter, contentAlpha, colors)
+                    drawMoreItem(centerX, centerY, diameter, contentAlpha, colors, IconShapes.isSquare(catalog.settings.iconShape))
                 }
                 // 左右扇形的角标分别位于左下角、右下角，避开相邻图标，不参与圆形裁剪。
                 image?.let { image ->
@@ -799,8 +805,10 @@ internal class CornerRadialOverlayView(
     }
 
     /**
-     * 按 ColorOS 17 工具栏溢出按钮的观感绘制：圆盘、向下偏移的外沿投影或微光、上下沿高光，
-     * 以及横排三点；配色随深浅色切换。比例取自同一按钮 40dp 圆盘内 24dp 图标的实机测量，随图标直径缩放。
+     * 按 ColorOS 17 工具栏溢出按钮的观感绘制：底板加横排三点；配色随深浅色切换。
+     * 比例取自同一按钮 40dp 圆盘内 24dp 图标的实机测量，随图标直径缩放。
+     * 底板随「图标形状」：圆形为圆盘；方形取应用图标的外形模板（[morePlateMask]），
+     * 与侧边栏条目同法，取不到模板时退回 [IconShapes.SQUARE_CORNER_FRACTION] 的圆角方形。
      */
     private fun DrawScope.drawMoreItem(
         centerX: Float,
@@ -808,21 +816,45 @@ internal class CornerRadialOverlayView(
         diameter: Float,
         alpha: Float,
         colors: RadialItemColors,
+        square: Boolean,
     ) {
         val radius = diameter / 2f
         if (radius <= 0f) return
-        // 去掉原实现的径向光晕与描边圈：只保留圆盘与三点，避免滑到「更多」时多出一层光圈。
-        drawCircle(
-            brush = Brush.verticalGradient(
+        // 去掉原实现的径向光晕与描边圈：只保留底板与三点，避免滑到「更多」时多出一层光圈。
+        val plate =
+            Brush.verticalGradient(
                 0f to colors.morePlateTop,
                 1f to colors.morePlateBottom,
                 startY = centerY - radius,
                 endY = centerY + radius,
-            ),
-            radius = radius,
-            center = Offset(centerX, centerY),
-            alpha = alpha,
-        )
+            )
+        val topLeft = Offset(centerX - radius, centerY - radius)
+        val plateSize = Size(diameter, diameter)
+        val mask = if (square) morePlateMask.value else null
+        when {
+            !square -> drawCircle(brush = plate, radius = radius, center = Offset(centerX, centerY), alpha = alpha)
+            mask == null ->
+                drawRoundRect(
+                    brush = plate,
+                    topLeft = topLeft,
+                    size = plateSize,
+                    cornerRadius = CornerRadius(diameter * IconShapes.SQUARE_CORNER_FRACTION),
+                    alpha = alpha,
+                )
+            else ->
+                drawIntoCanvas { canvas ->
+                    // 先画模板的 alpha，再用 SrcIn 把渐变填进模板，外形与应用图标一致。
+                    canvas.saveLayer(Rect(topLeft, plateSize), androidx.compose.ui.graphics.Paint())
+                    drawImage(
+                        image = mask,
+                        dstOffset = IntOffset(topLeft.x.roundToInt(), topLeft.y.roundToInt()),
+                        dstSize = IntSize(diameter.roundToInt().coerceAtLeast(1), diameter.roundToInt().coerceAtLeast(1)),
+                        filterQuality = FilterQuality.High,
+                    )
+                    drawRect(brush = plate, topLeft = topLeft, size = plateSize, alpha = alpha, blendMode = BlendMode.SrcIn)
+                    canvas.restore()
+                }
+        }
         for (offset in -1..1) {
             drawCircle(
                 color = colors.moreDot,
@@ -1406,6 +1438,30 @@ private fun Modifier.panelReveal(
             }
         }
     }
+
+/**
+ * 「更多」底板模板的缓存：浮层每次呼出都新建，模板跨次复用，只在扇形应用换了图标时重取。
+ * 只看前 [CANDIDATES] 个条目，避免全是圆形工具时逐个扫完。
+ */
+private object MorePlateMasks {
+    private const val CANDIDATES = 12
+    private var source: java.lang.ref.WeakReference<android.graphics.Bitmap>? = null
+    private var mask: ImageBitmap? = null
+
+    @Synchronized
+    fun of(catalog: AppCatalogSnapshot): ImageBitmap? {
+        if (!IconShapes.isSquare(catalog.settings.iconShape)) return null
+        val cached = source?.get()
+        if (cached != null && mask != null && catalog.radialApps.any { it.icon === cached }) return mask
+        for (entry in catalog.radialApps.take(CANDIDATES)) {
+            val found = runCatching { IconShapes.bodyMaskFrom(entry.icon) }.getOrNull() ?: continue
+            source = java.lang.ref.WeakReference(entry.icon)
+            mask = found.asImageBitmap()
+            return mask
+        }
+        return null
+    }
+}
 
 private class RadialImage(entry: RadialEntry) {
     val icon: ImageBitmap = entry.icon.asImageBitmap()
