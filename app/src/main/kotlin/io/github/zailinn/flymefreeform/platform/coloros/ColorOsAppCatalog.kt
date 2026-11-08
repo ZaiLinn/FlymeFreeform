@@ -32,15 +32,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * 扇形里固定项的排序：普通应用在前，从侧边栏添加的快捷项（工具 / 快捷方式 / 克隆应用）一律垫底。
- *
- * 快捷项不进应用列表，排在前面会把应用挤出上限名额；这里的 sortedBy 是稳定排序，
- * 组内仍保持用户在设置页拖出来的顺序。
- */
-private fun radialPinOrder(targets: List<PinnedTarget>): List<PinnedTarget> =
-    targets.sortedBy { if (it is PinnedTarget.App) 0 else 1 }
-
 internal data class RadialEntry(
     val target: PinnedTarget,
     val label: String,
@@ -194,7 +185,8 @@ internal class ColorOsAppCatalog(
         val outer =
             AppSelectionPolicy.radialItems(
                 pinsSaved = settings.pinsSaved,
-                availablePins = radialPinOrder(settings.pinnedTargets).filter(::exists),
+                // 固定项严格按设置页的顺序（应用、工具、快捷方式可混排）；超出名额时截掉的是排在最后的。
+                availablePins = settings.pinnedTargets.filter(::exists),
                 recent = outerRecents,
                 all = if (needsAlphabetical) alphabetical.filterNot { it in reservedInner } else emptyList(),
                 identity = { it },
@@ -203,7 +195,7 @@ internal class ColorOsAppCatalog(
         val inner =
             AppSelectionPolicy.innerArcItems(
                 capacities = innerCapacities,
-                customPins = settings.innerArcTargets.map { radialPinOrder(it).filter(::exists) },
+                customPins = settings.innerArcTargets.map { it.filter(::exists) },
                 customized = settings.innerArcTargets.map { it.isNotEmpty() },
                 recent = innerFill,
                 used = outer,
