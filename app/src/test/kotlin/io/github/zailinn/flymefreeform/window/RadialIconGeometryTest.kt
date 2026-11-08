@@ -60,9 +60,21 @@ class RadialIconGeometryTest {
         val narrow = fit(insets = insets)
         assertTrue(narrow.radius < full.radius)
         assertEquals(242f / 44f, narrow.radius / narrow.iconDiameter, 0.001f)
-        assertEquals(0.9f, narrow.selectionEnterRadius / narrow.iconDiameter, 0.001f)
-        assertEquals(1.25f, narrow.selectionKeepRadius / narrow.iconDiameter, 0.001f)
+        // 未给命中范围时兜底为 2.5 倍图标直径，随图标同比例缩小；不设保持圈（0）。
+        assertEquals(2.5f, narrow.selectionEnterRadius / narrow.iconDiameter, 0.001f)
+        assertEquals(0f, narrow.selectionKeepRadius, 0f)
         for (count in 1..7) assertEquals(narrow, fit(insets = insets, count = count))
+    }
+
+    @Test
+    fun hitRangeSettingIsPhysicalDpIndependentOfIconScale() {
+        val insets = OverlaySafeInsets(left = 170f, right = 170f, top = 50f, bottom = 100f)
+        for (density in listOf(1f, 2.625f)) {
+            val full = RadialIconGeometry.fit(400f * density, 890f * density, density, OverlaySafeInsets(), 7, 100f)
+            val narrow = RadialIconGeometry.fit(400f * density, 890f * density, density, insets, 7, 100f)
+            assertEquals(100f * density, full.selectionEnterRadius, 0.001f)
+            assertEquals(100f * density, narrow.selectionEnterRadius, 0.001f)
+        }
     }
 
     @Test
