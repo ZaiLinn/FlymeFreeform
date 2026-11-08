@@ -97,7 +97,9 @@ config/ apps/ framework/ log/
 各圈实际条数以目录给出的 `AppCatalogSnapshot.radialArcCounts` 为准，自定义圈放不满时空位不会挤进下一圈。
 命中只按「离哪个图标圆心最近且在命中范围内」；有内侧圆弧时另设角落空白区 = 最内一圈半径 − 一个圈距
 （2/3/4 条约 128/70/52 基准 dp），不能用「图标内沿」做边界，否则两圈时第二圈只剩约 50 宽、很难选中。
-图标大小外大内小（`RadialIconScale`，只改绘制，不动圆心、圈距、命中）：应用图标按不透明本体占比放大（上限 1.25×），本体与「更多」圆盘同大；
+图标大小外大内小（`RadialIconScale`，只改绘制，不动圆心、圈距、命中）：应用图标按不透明本体占比放大（上限 1.25×），本体与「更多」底板同大；
+「更多」底板随「图标形状」：圆形画圆盘；方形取扇形里第一个合格应用图标的外形模板（`IconShapes.bodyMaskFrom`，裁到本体，与侧边栏条目塑形同法），
+用 `saveLayer` + `SrcIn` 把渐变填进模板，模板按源图标跨次呼出缓存（`MorePlateMasks`）；取不到模板时退回 0.25 圆角方形。
 内侧圆弧每向内一圈乘步进——两条圆弧 0.92，三四条 0.95（用户定）；角落空白区与设置页命中预览同样按最内圈缩小后的直径。
 屏幕中央所选应用卡片（开关 `radial_center_preview` 默认关、`radial_center_label` 默认开）：`CornerRadialOverlayView.drawCenterPreview` 在扇形画布上画，
 不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长从 `DENSITY_XXXHIGH` 自适应图标重画（再走 `IconShapes`），不放大扇形那份位图，最近 4 个缓存在目录里；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
@@ -320,18 +322,19 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-08 13:40（Asia/Shanghai）
+更新时间：2026-11-08 14:30（Asia/Shanghai）
 
 | 项 | 值 |
 |---|---|
-| 版本 | 1.3.10 / 2026110820（v1.3.10 tag 所指） |
-| 本地构建 | `out/FlymeFreeform-v1.3.10.apk`，sha256 `83d94a5e3c2dc8d15ceef9e4c115a763f59cd476d3612b27828ca69e15082bf3`，2158895 B，用户密钥签名（即 v1.3.10 Release 资产），未装到设备。之前的测试包：1.3.9 `b779d219`、1.3.8 `e8e93fc1` |
-| 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main`。v1.3.7（`5ce7888`）之后：用户网页提交 `bdb6a30`（README 致谢精简），`a454470` 新设置项、`5a89d85` 「更多」原有列表 + 字母索引 + 回桌面收起、`9d1c35d` 扇形外大内小 + 屏幕中央所选应用 + 内置面板回桌面收起、`c1d0893` 添加应用快速点击闪动，最后一个提交为 1.3.10 版本号与文档（v1.3.10 tag 所指）。前三个功能提交均在临时 worktree 单独编译通过；`upstream` = Hoerire |
+| 版本 | 1.3.10 / 2026110821。用户要求覆盖重发 v1.3.10（破例未加 versionName）：tag 移到含方形「更多」修复的提交，Release 资产替换 |
+| 本地构建 | `out/FlymeFreeform-v1.3.10.apk`，sha256 `afc03c6bdb1d36765f861c0a6b470d9f71181f22ddb5646e6b8102a4f62f65f0`，2158895 B，versionCode 2026110821，用户密钥签名（即重发后的 v1.3.10 Release 资产），未装到设备。首发的 1.3.10（2026110820）`83d94a5e…2bf3` 备份在 `tmp/FlymeFreeform-v1.3.10-83d94a5e.apk`。之前的测试包：1.3.9 `b779d219`、1.3.8 `e8e93fc1` |
+| 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main`。v1.3.7（`5ce7888`）之后：用户网页提交 `bdb6a30`（README 致谢精简），`a454470` 新设置项、`5a89d85` 「更多」原有列表 + 字母索引 + 回桌面收起、`9d1c35d` 扇形外大内小 + 屏幕中央所选应用 + 内置面板回桌面收起、`c1d0893` 添加应用快速点击闪动，之后是 1.3.10 版本号与文档、用户网页提交 `e3681e4`（README 去上游链接）、方形「更多」修复、README 换 png 截图，最后一个提交为重发 1.3.10 的版本号与文档（v1.3.10 tag 所指）。前三个功能提交均在临时 worktree 单独编译通过；`upstream` = Hoerire |
 | 已发布 | Release [v1.3.10](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.10)，资产 `FlymeFreeform-v1.3.10.apk`（sha256 见「本地构建」）；上一版 v1.3.7 资产 `a8344244…61d3` |
 | 设备已装 | `b779d219`（1.3.9 / 2026110818），比 1.3.10 少添加应用闪动修正与占用优化。13:09 前后重启过侧边栏与 system_server；当时设置 `pnative=false`、`center=true`、`vlog=true` |
 | 设备另有 | 旧包 `io.github.hoerire.flymefreeform` 仍在，应在 LSPosed 停用并卸载 |
 | 设备反馈 | 1.3.8：中央卡片有黑底板、图标发糊、字母索引条不出现，1.3.9 已改；1.3.9：添加应用快速点击闪动，1.3.10 已改。第 2 圈「其余变灰」核实为该圈已存满 5 项（两个工具 + DeepSeek、Duolingo、Firefox），按设计 |
-| 未在设备验证 | 1.3.10 相对 1.3.9 的添加应用闪动修正与三处占用优化；屏幕中央所选应用卡片（无底板、高清图标、应用名省略、横屏位置、换项弹动）；扇形图标外大内小（方形模式圆角是否被裁、选中放大是否越出屏幕）；字母索引条（日志 `PANEL_ALPHABET_SHOWN` / `PANEL_ALPHABET_NO_LIST`；右列图标能否点、跳转、震动、深色文字颜色）；回桌面收起「更多」（`ALL_APPS_CLOSE_SYSTEM_DIALOGS_<reason>` / `SYSTEM_MORE_PANEL_CLOSE_<reason>`）；跟随系统时 LuckyTool 上限生效 |
+| 未打包改动 | 无 |
+| 未在设备验证 | 方形模式下「更多」底板外形、大小是否与相邻应用图标一致（深浅色各看一次）；1.3.10 相对 1.3.9 的添加应用闪动修正与三处占用优化；屏幕中央所选应用卡片（无底板、高清图标、应用名省略、横屏位置、换项弹动）；扇形图标外大内小（方形模式圆角是否被裁、选中放大是否越出屏幕）；字母索引条（日志 `PANEL_ALPHABET_SHOWN` / `PANEL_ALPHABET_NO_LIST`；右列图标能否点、跳转、震动、深色文字颜色）；回桌面收起「更多」（`ALL_APPS_CLOSE_SYSTEM_DIALOGS_<reason>` / `SYSTEM_MORE_PANEL_CLOSE_<reason>`）；跟随系统时 LuckyTool 上限生效 |
 | 待查 | 用户反映装 `e38172b3` 后增减应用扇形不更新。之后 system_server 无 `MODULE_STATE_CHANGED`，但固定项走广播 `override` 路径本就不打这条日志，10:36 前后的目录刷新可能就是广播触发，原因未定 |
 | 单元测试 | 180 项全部通过（3 项 skip） |
 | 工具 | `local-release.sh`、`restart-gate.sh`（均列入 `.gitignore`，不随仓库分发） |
