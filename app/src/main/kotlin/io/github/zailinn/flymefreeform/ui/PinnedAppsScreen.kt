@@ -119,8 +119,10 @@ internal fun PinnedAppsScreen(
 ) {
     val refreshCatalog by rememberUpdatedState(onRefreshCatalog)
     val cancelCatalog by rememberUpdatedState(onCancelCatalog)
-    LifecycleResumeEffect(state.canChangeSettings) {
-        if (state.canChangeSettings) refreshCatalog()
+    // 以 settingsEditable 为键，不用 canChangeSettings：每次增删都会短暂置起 isUpdating，
+    // 若随之重跑，就会取消并重新请求侧边栏目录，列表顶部反复弹出「正在读取侧边栏目录」，工具与快捷入口也随之变灰。
+    LifecycleResumeEffect(state.settingsEditable) {
+        if (state.settingsEditable) refreshCatalog()
         onPauseOrDispose { cancelCatalog() }
     }
     // 多圆弧时每圈单独编辑：第 1 圈即默认圆弧，内侧各圈保存在独立的键里。
@@ -517,13 +519,15 @@ internal fun PinnedAppsScreen(
                     LazyColumn(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
                         if (sidebarCatalog.status != SidebarCatalogStatus.Ready) {
                             item(key = "sidebar_status") {
+                                // Idle 只出现在读取被暂停打断之后，恢复时会重新读取，按读取中显示。
+                                val unavailable = sidebarCatalog.status == SidebarCatalogStatus.Unavailable
                                 BasicComponent(
-                                    title = stringResource(if (sidebarCatalog.status == SidebarCatalogStatus.Loading) R.string.sidebar_catalog_loading else R.string.sidebar_catalog_unavailable),
-                                    summary = stringResource(if (sidebarCatalog.status == SidebarCatalogStatus.Loading) R.string.sidebar_catalog_loading_summary else R.string.sidebar_catalog_retry_summary),
+                                    title = stringResource(if (unavailable) R.string.sidebar_catalog_unavailable else R.string.sidebar_catalog_loading),
+                                    summary = stringResource(if (unavailable) R.string.sidebar_catalog_retry_summary else R.string.sidebar_catalog_loading_summary),
                                     onClick = onRefreshCatalog,
                                     onClickLabel = stringResource(R.string.retry_action),
                                     role = Role.Button,
-                                    enabled = state.settingsEditable && sidebarCatalog.status != SidebarCatalogStatus.Loading,
+                                    enabled = state.settingsEditable && unavailable,
                                 )
                             }
                         }

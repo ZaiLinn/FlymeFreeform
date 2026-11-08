@@ -20,7 +20,12 @@ internal data class SidebarCatalogState(
     val status: SidebarCatalogStatus = SidebarCatalogStatus.Idle,
 )
 
-/** 仅在页面可见时请求；缓存只供显示，目录失败时不允许添加旧条目。 */
+/**
+ * 仅在页面可见时请求。第一次读到完整目录后常驻内存（随 Application 存活）：
+ * 之后的请求在后台静默进行，成功则替换，失败、超时或被系统端节流丢弃时保留原目录，
+ * 状态始终为 [SidebarCatalogStatus.Ready]，工具与快捷入口不因重新读取而变灰。
+ * 只有从未读到目录时才显示读取中或不可用。
+ */
 internal class SidebarEntryRepository(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private val reply = Messenger(Handler(handler.looper, ::receive))
@@ -35,7 +40,9 @@ internal class SidebarEntryRepository(private val context: Context) {
         val request = UUID.randomUUID().toString()
         id = request
         transfer = CatalogTransfer(SidebarEntryProtocol.MAX_ENTRIES, SelectableEntry::target)
-        mutableState.value = mutableState.value.copy(status = SidebarCatalogStatus.Loading)
+        if (mutableState.value.status != SidebarCatalogStatus.Ready) {
+            mutableState.value = mutableState.value.copy(status = SidebarCatalogStatus.Loading)
+        }
         handler.postDelayed(timeout, SidebarEntryProtocol.TIMEOUT_MS)
         try {
             context.sendBroadcast(Intent(SidebarEntryProtocol.CATALOG_ACTION).setPackage("android").apply {
@@ -81,6 +88,9 @@ internal class SidebarEntryRepository(private val context: Context) {
 
     private fun fail() {
         cancel()
-        mutableState.value = mutableState.value.copy(status = SidebarCatalogStatus.Unavailable)
+        // 已有目录时静默失败，继续用缓存。
+        if (mutableState.value.status != SidebarCatalogStatus.Ready) {
+            mutableState.value = mutableState.value.copy(status = SidebarCatalogStatus.Unavailable)
+        }
     }
 }
