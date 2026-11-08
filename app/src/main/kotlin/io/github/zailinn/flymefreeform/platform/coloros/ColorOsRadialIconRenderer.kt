@@ -30,7 +30,11 @@ internal class ColorOsRadialIconRenderer(
         }
     }
 
-    fun shapedIcon(source: Drawable): Drawable {
+    /**
+     * [sizePx] 为 null 时按系统最大图标尺寸重建（扇形用）；中央预览传入实际绘制边长，
+     * 让 ColorOS 按大尺寸重建图层，和扇形同一条处理链（含深色模式下的图标处理），观感一致。
+     */
+    fun shapedIcon(source: Drawable, sizePx: Int? = null): Drawable {
         // 普通位图没有可重新塑形的自适应图层，保留系统结果。
         if (source !is AdaptiveIconDrawable) return source
         val native = access ?: return source
@@ -40,7 +44,7 @@ internal class ColorOsRadialIconRenderer(
             val config = native.config.get(originalExtension)
             val icon = state.newDrawable(resources).mutate() as AdaptiveIconDrawable
             val extension = native.extension.get(icon)
-            val maximumSize = native.maximumSize.invoke(null, resources) as Int
+            val maximumSize = sizePx ?: native.maximumSize.invoke(null, resources) as Int
             check(maximumSize > 0)
             // 保留系统加载器对应用图层的缩放和分类，仅将外框填满绘制区域。
             val foregroundScale = config?.let { native.foregroundScale.invoke(it) as Float } ?: 1f

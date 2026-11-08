@@ -203,21 +203,30 @@ internal class CornerRadialOverlayView(
         if (target in previewImages || target in previewRequests) return
         val loader = catalog.previewIconLoader ?: return
         val generation = previewGeneration
-        val sizePx = PreviewIconSizing.renderSize(centerSizeDp * resources.displayMetrics.density * RadialIconScale.MAX_BODY_FILL)
-        previewRequests[target] =
+        val sizePx = PreviewIconSizing.renderSizeFor(centerSizeDp, resources.displayMetrics.density)
+        var appliedInline = false
+        val cancel =
             loader.request(target, sizePx) { bitmap ->
                 // 留白比例在图标线程算好（逐像素扫描），主线程只接收结果；命中缓存的位图查表即得。
                 val fill = RadialIconScale.bodyFill(iconBodyFraction(bitmap))
                 val image = bitmap.asImageBitmap()
-                post {
+                val apply = {
                     if (!disposed && generation == previewGeneration) {
                         previewRequests.remove(target)
                         previewImages.remove(target)
+                        // 位图与目录缓存共用同一份，不另占内存；条目数以本次扇形为上限。
                         previewImages[target] = image to fill
-                        while (previewImages.size > 4) previewImages.keys.firstOrNull { it != target }?.let(previewImages::remove)
                     }
                 }
+                // 命中缓存时回调在主线程同步返回：当场写入，首帧就用高清图，不先闪一帧扇形小图。
+                if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                    appliedInline = true
+                    apply()
+                } else {
+                    post { apply() }
+                }
             }
+        if (!appliedInline) previewRequests[target] = cancel
     }
     private var lastSelectedArc = -1
     private val timeout = Runnable(::requestDismiss)
@@ -271,7 +280,8 @@ internal class CornerRadialOverlayView(
         previewRequests.values.forEach { it() }
         previewRequests.clear()
         previewImages.clear()
-        if (centerPreview) catalog.radialApps.take(3).indices.forEach(::requestPreviewImage)
+        // 目录已在后台预取全部扇形项的高清图，这里多半同步命中，首帧即用高清图。
+        if (centerPreview) catalog.radialApps.indices.forEach(::requestPreviewImage)
         latestX = x
         latestY = y
         radialImages.value = catalog.radialApps.map(::RadialImage)

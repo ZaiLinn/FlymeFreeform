@@ -19,6 +19,7 @@ import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toDrawable
 import io.github.zailinn.flymefreeform.apps.AppSelectionPolicy
 import io.github.zailinn.flymefreeform.apps.IconShapes
+import io.github.zailinn.flymefreeform.window.PreviewIconSizing
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
 import io.github.zailinn.flymefreeform.config.ModulePreferences
 import io.github.zailinn.flymefreeform.config.ModuleSettingsSnapshot
@@ -126,8 +127,12 @@ internal class ColorOsAppCatalog(
     private val labelCache = ConcurrentHashMap<PinnedTarget, String>()
     private val iconCache = ConcurrentHashMap<PinnedTarget, Bitmap>()
     private val iconRevision = io.github.zailinn.flymefreeform.apps.CacheRevision()
-    private val previewRenderer = HighResolutionIconRenderer(context)
-    /** 中央卡片的高清图标，只留最近 [PREVIEW_CACHE_SIZE] 个（按显示尺寸 1.5 倍绘制，默认大小每个约 1.6 MB，最大 4 MiB）。 */
+    private val previewRenderer = HighResolutionIconRenderer(ColorOsRadialIconRenderer(context.resources, logger))
+    /**
+     * 中央卡片的高清图标：缓存当前扇形的全部条目（每次加载目录后裁掉不在扇形里的），由 [prefetchPreviews] 在后台预取。
+     * 按显示尺寸 1.5 倍绘制，默认大小每张约 0.9 MB，18 项约 16 MB；[PREVIEW_CACHE_SIZE] 只作安全上限。
+     * 只缓存扇形项，「更多」面板的应用不缓存。
+     */
     private val previewCache =
         object : LinkedHashMap<PinnedTarget, Bitmap>(PREVIEW_CACHE_SIZE, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PinnedTarget, Bitmap>?): Boolean = size > PREVIEW_CACHE_SIZE
@@ -165,7 +170,8 @@ internal class ColorOsAppCatalog(
         appsRevision.incrementAndGet()
         iconRevision.invalidate {
             iconCache.keys.removeAll { it is PinnedTarget.App && it.packageName == packageName }
-            synchronized(previewCache) { previewCache.clear() }
+            // 只丢该包的高清图，其余保留，下次加载目录时补画缺的那张。
+            synchronized(previewCache) { previewCache.keys.removeAll { it is PinnedTarget.App && it.packageName == packageName } }
         }
     }
 
@@ -252,6 +258,7 @@ internal class ColorOsAppCatalog(
         val excluded = radialTargets.toHashSet()
         val counts = if (radial.size == radialTargets.size) radialArcCounts else emptyList()
         publish(AppCatalogSnapshot(radial, lastPanel.filterNot { it.target in excluded }, settings, counts, iconLoader, previewLoader))
+        prefetchPreviews(radial.map { it.target }, index, settings)
         ModuleLog.debug(LOG_TAG) {
             "SYSTEM_CATALOG_RADIAL_" + (SystemClock.uptimeMillis() - startedAt) + "MS_" + radial.size
         }
@@ -348,12 +355,27 @@ internal class ColorOsAppCatalog(
         val cancelled = AtomicBoolean()
         panelIconExecutor.execute {
             if (cancelled.get() || !iconRevision.isCurrent(revision)) return@execute
-            val icon = previewRenderer.render(info, sizePx, requestedShape) ?: return@execute
+            val icon = previewRenderer.render(info, sizePx, requestedShape, squareMask) ?: return@execute
             icon.prepareToDraw()
             if (!iconRevision.commit(revision) { synchronized(previewCache) { previewCache[target] = icon } }) return@execute
             if (!cancelled.get() && iconRevision.isCurrent(revision)) onLoaded(icon)
         }
         return { cancelled.set(true) }
+    }
+
+    /**
+     * 只画缺的：已缓存且尺寸够的跳过，所以前台切换引起的频繁加载只会补画新进扇形的那几项。
+     * 裁掉不在本次扇形里的条目，内存随扇形条目数而定。中央预览关闭时不预取也不保留。
+     */
+    private fun prefetchPreviews(targets: List<PinnedTarget>, index: AppIndex, settings: ModuleSettingsSnapshot) {
+        val keep = if (settings.radialCenterPreview) targets.toHashSet() else emptySet()
+        synchronized(previewCache) { previewCache.keys.retainAll(keep) }
+        if (!settings.radialCenterPreview) return
+        val sizePx = PreviewIconSizing.renderSizeFor(settings.radialCenterSizeDp, context.resources.displayMetrics.density)
+        val missing = synchronized(previewCache) { targets.filter { (previewCache[it]?.width ?: 0) < sizePx } }
+        if (missing.isEmpty()) return
+        ModuleLog.debug(LOG_TAG) { "SYSTEM_PREVIEW_PREFETCH_" + missing.size + "_OF_" + targets.size }
+        missing.forEach { target -> requestPreviewIcon(target, index, sizePx) {} }
     }
 
     /** 应用的桌面入口；分身仅在包内只有一个入口时复用主用户入口（与扇形塑形同一规则）。 */
@@ -608,7 +630,7 @@ internal class ColorOsAppCatalog(
     }
 
     private companion object {
-        const val PREVIEW_CACHE_SIZE = 4
+        const val PREVIEW_CACHE_SIZE = 48
         const val SQUARE_MASK_CANDIDATES = 30
         const val RECENT_LIMIT = 48
         const val FREQUENT_WINDOW_MS = 7L * 24 * 60 * 60 * 1000

@@ -1,46 +1,33 @@
 package io.github.zailinn.flymefreeform.platform.coloros
 
-import android.content.Context
 import android.content.pm.LauncherActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.drawable.AdaptiveIconDrawable
-import android.graphics.drawable.BitmapDrawable
-import android.graphics.drawable.VectorDrawable
 import android.util.DisplayMetrics
 import androidx.core.graphics.createBitmap
 import io.github.zailinn.flymefreeform.apps.IconShapes
 import io.github.zailinn.flymefreeform.log.ModuleLog
 
-/** 独立于扇形的小图标缓存，直接按预览像素重绘可缩放资源。只在图标工作线程使用。 */
-internal class HighResolutionIconRenderer(private val context: Context) {
-    fun render(info: LauncherActivityInfo, sizePx: Int, shape: Int): Bitmap? = runCatching {
-        var drawable = info.getIcon(DisplayMetrics.DENSITY_XXXHIGH)
-        var originalResource = false
-        // 某些主题加载器只给出小位图；放大不会补回细节，优先尝试 APK 的自适应或矢量源。
-        val nativePixels = (drawable as? BitmapDrawable)?.bitmap?.let { maxOf(it.width, it.height) } ?: 0
-        if (nativePixels in 1 until sizePx) {
-            runCatching {
-                val resources = context.packageManager.getResourcesForApplication(info.applicationInfo)
-                val resource = info.activityInfo.iconResource
-                val raw = resources.getDrawableForDensity(resource, DisplayMetrics.DENSITY_XXXHIGH, null)
-                if (raw is AdaptiveIconDrawable || raw is VectorDrawable ||
-                    (raw is BitmapDrawable && maxOf(raw.bitmap.width, raw.bitmap.height) > nativePixels)) {
-                    drawable = raw
-                    originalResource = true
-                }
-            }
-        }
-        val source = drawable.constantState?.newDrawable()?.mutate() ?: drawable.mutate()
+/**
+ * 中央预览的高清图标，与扇形图标走同一条处理链：系统图标 → ColorOS 原生塑形 → [IconShapes]，只是按预览像素绘制。
+ *
+ * 曾直接绘制 AdaptiveIconDrawable、取不到高清时改读 APK 原始资源，跳过了 ColorOS 的塑形与深色模式处理；
+ * 中央先显示扇形小图、再换成高清图时亮度和占比不同，看起来像闪一下变亮。
+ * 只在图标工作线程使用；[shaper] 为独立实例，不与目录线程共用。
+ */
+internal class HighResolutionIconRenderer(private val shaper: ColorOsRadialIconRenderer) {
+    fun render(info: LauncherActivityInfo, sizePx: Int, shape: Int, squareMask: Bitmap?): Bitmap? = runCatching {
+        val source = info.getIcon(DisplayMetrics.DENSITY_XXXHIGH)
+        val drawable = shaper.shapedIcon(source, sizePx)
         val raw = createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-        source.setBounds(0, 0, sizePx, sizePx)
-        source.draw(Canvas(raw))
+        drawable.setBounds(0, 0, sizePx, sizePx)
+        drawable.draw(Canvas(raw))
         ModuleLog.debug("FlymeFreeform") {
-            "PREVIEW_ICON_SOURCE_" + info.componentName.packageName + "_" + drawable.javaClass.simpleName +
-                "_" + drawable.intrinsicWidth + "x" + drawable.intrinsicHeight + "_TO" + sizePx +
-                "_raw" + (if (originalResource) 1 else 0)
+            "PREVIEW_ICON_SOURCE_" + info.componentName.packageName + "_" + source.javaClass.simpleName +
+                "_" + source.intrinsicWidth + "x" + source.intrinsicHeight + "_TO" + sizePx +
+                "_native" + (if (drawable !== source) 1 else 0)
         }
-        // 中央预览即使使用原始资源，也必须服从设置的圆形 / 圆角方形。
-        IconShapes.apply(raw, shape, isApp = false, squareMask = null)
+        // 与扇形 shapeDrawable 相同的参数，保证两张图外形一致。
+        IconShapes.apply(raw, shape, isApp = true, squareMask = squareMask)
     }.getOrNull()
 }

@@ -1,5 +1,7 @@
 package io.github.zailinn.flymefreeform.window
 
+import io.github.zailinn.flymefreeform.config.ModulePreferences
+import io.github.zailinn.flymefreeform.gesture.RadialIconScale
 import kotlin.math.ceil
 
 /**
@@ -9,6 +11,10 @@ import kotlin.math.ceil
 internal object PreviewIconSizing {
     const val MAX_RENDER_PX = 1024
     private const val RENDER_SCALE = 1.5
+    /** 中央卡片的绘制边长；扇形视图请求与目录预取必须用同一公式，否则缓存按宽度判定不命中。 */
+    fun renderSizeFor(centerSizeDp: Int, density: Float): Int =
+        renderSize(ModulePreferences.coerceRadialCenterSizeDp(centerSizeDp) * density * RadialIconScale.MAX_BODY_FILL)
+
     fun renderSize(displayPx: Float): Int {
         if (!displayPx.isFinite() || displayPx <= 0f) return 1
         return ceil(displayPx.toDouble() * RENDER_SCALE).coerceIn(1.0, MAX_RENDER_PX.toDouble()).toInt()
