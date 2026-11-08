@@ -1,7 +1,9 @@
 # FlymeFreeform 实现说明
 
-版本 1.3.6 / versionCode 2026110717　工程根 `srcOld`　产物 `out/FlymeFreeform-v1.3.6.apk`
-源码 `Hoerire/FlymeFreeform`　LSPosed 侧 `Xposed-Modules-Repo/io.github.hoerire.flymefreeform`
+版本 1.3.6 / versionCode 2026110717　包名 `io.github.zailinn.flymefreeform`　产物 `out/FlymeFreeform-v1.3.6.apk`
+源码 `ZaiLinn/FlymeFreeform`（维护者 ZaiLinn；fork 自 `Hoerire/FlymeFreeform` ← `Mangi-11/FlymeFreeform`，致谢见 README）
+工作副本 `~/Documents/Code/FlymeFreeform`（macOS），临时文件 `tmp/`；构建、签名与发布见第六节。
+包名于 2026-11-08 由 `io.github.hoerire.flymefreeform` 改为现名，设备上的旧包名模块需卸载后再装新包。
 
 本文只讲「代码怎么实现的」与「改动时不能碰的边界」。功能说明见 README。
 
@@ -16,11 +18,14 @@
 “顺手先做”不算授权。一次只验一个变量，一个改动一个包。
 
 1. 读本文件第七节（日志）、第九节（改动守则）、第十节（当前状态），一句话复述给用户
-2. 核设备当前包：`dumpsys package io.github.hoerire.flymefreeform | grep codePath` → `sha256sum <codePath>/base.apk`，与第十节对照，不认版本号
-3. 取日志现状：`grep -aE 'OVERFLOW_|MODULE_CONFIG_READY|MODULE_STATE' 最新 modules log`，先看现在到底是哪版在跑
+2. 核设备当前包：`dumpsys package io.github.zailinn.flymefreeform | grep codePath` → `sha256sum <codePath>/base.apk`，与第十节对照，不认版本号
+3. 取日志现状：`grep -aE 'MODULE_CONFIG_READY|COORDINATOR_READY|SYSTEM_CATALOG_|PANEL_DATA_HOOKS' 最新 modules log`，先看现在到底是哪版在跑
 4. 要重启 → 一律走 `sh restart-gate.sh --changed … --pkg … --verify … --logs … -- "<命令>"`，
-   四段缺一项脚本就拒绝执行；声明落 `tmp/restart-declarations.log`
-5. 收工：回写第十节
+   四段缺一项脚本就拒绝执行；`--pkg` 写设备上 APK 的 sha256 前缀，与设备实际安装的不符也拒绝；
+   声明落 `tmp/restart-declarations.log`。例：
+   `sh restart-gate.sh --changed "…" --pkg beec312c --verify "…" --logs "COORDINATOR_READY|SYSTEM_CATALOG_" -- "adb shell \"su -c 'setsid killall system_server'\""`
+5. 收工：回写第十节。**每次改代码、装包、重启后都要更新本文件**（用户 2026-11-08 要求）：
+   第十节的设备包与 sha256、待验证项、下一步，以及受影响的实现说明、参数、日志码
 
 > 为什么写死成脚本：上下文压缩会丢掉「承诺过不做的事」，只留「现在做到哪了」。
 > 纪律必须能从磁盘读出来并拦得住动作，不能靠新会话的自觉。
@@ -51,8 +56,10 @@ platform/coloros/           ColorOS 私有接口封装，全部反射
   ColorOsFreeformCoordinator.kt           system_server 内扇形总协调
   ColorOsAllApps*.kt                      「更多」面板窗口与内容（侧边栏进程）
   PanelToolLaunchBridge.kt                面板工具小窗参数注入（侧边栏进程）
-  FavoriteGroupInjector.kt                面板数据原地改写
-gesture/                    纯逻辑：手势状态机、命中计算
+  FavoriteGroupInjector.kt                面板数据原地改写、分组标题角色登记
+  PanelGroupLabels.kt                     分组标题文案（收藏/最近，随系统语言）
+  ColorOsAppCatalog.kt                    扇形与「更多」的条目目录（system_server 后台线程）
+gesture/                    纯逻辑：手势状态机、命中计算、多圆弧容量（RadialArcPlan）
 window/                     浮层自绘与动画
 ui/                         Compose + Miuix 设置界面
 config/ apps/ framework/ log/
@@ -63,6 +70,9 @@ config/ apps/ framework/ log/
 | 要改什么 | 去哪里 |
 |---|---|
 | 扇形呼出、命中半径 | `gesture/CornerGestureEngine.kt`、`RadialGeometry.kt` |
+| 多圆弧容量与间距 | `gesture/RadialArcPlan.kt` |
+| 扇形放哪些应用、补位、图标加载 | `platform/coloros/ColorOsAppCatalog.kt`、`apps/AppSelectionPolicy.kt` |
+| 扇形应用页（按圈分页） | `ui/PinnedAppsScreen.kt` |
 | 扇形浮层 | `window/CornerRadialOverlayView.kt` |
 | 角区触摸窗口 | `hook/SystemUiCornerInputMonitor.kt` |
 | 「更多」面板 | `platform/coloros/ColorOsAllApps*.kt` |
@@ -82,9 +92,34 @@ config/ apps/ framework/ log/
 压在输入法与键盘之上，回落 `TYPE_APPLICATION_OVERLAY`(111000)。松手当帧提交启动、复制原生 zoom 参数、
 侧边栏连接常驻——三处缺一都会明显变慢。
 
+**多圆弧**　第 1 条是默认圆弧（快捷项 +「更多」），内侧圆弧依次向内收一个圈距，容量 5/4/3 且不超过外侧一条减 1
+（`RadialArcPlan.innerCapacities`）。`RadialGeometry.layout` 的 itemCenters 顺序为「默认圆弧快捷项 → 内侧各圈（由外向内）→ 更多」。
+各圈实际条数以目录给出的 `AppCatalogSnapshot.radialArcCounts` 为准，自定义圈放不满时空位不会挤进下一圈。
+命中只按「离哪个图标圆心最近且在命中范围内」；有内侧圆弧时另设角落空白区 = 最内一圈半径 − 一个圈距
+（2/3/4 条约 128/70/52 基准 dp），不能用「图标内沿」做边界，否则两圈时第二圈只剩约 50 宽、很难选中。
+
+**扇形目录**　`ColorOsAppCatalog` 在 system_server 的单线程执行器里工作，一次刷新分两步发布：
+① 只为扇形条目（≤18 项）取名称、图标并塑形，立即发布；② 读全部名称、排好「更多」顺序后发布（未画好的图标用
+`PanelIconPlaceholder`，面板格子进入视野时经 `panelIconLoader` 在独立线程按需取图），随后后台补齐全部图标再发布一次。
+应用列表只在 reloadApps（解锁恢复、目录为空）或包广播（`invalidatePackage`）时重读；名称与图标按条目缓存，
+只丢弃变动的包。增减固定项**不重读应用列表**。禁止回到「每次刷新把全部应用图标画成位图」的做法：
+本机 537 个桌面入口，那样增减一项要等数秒、开机后头几次呼出是空扇形。
+补位来源 `radial_fill_source`：最近使用（`getRecentTasks`）、最常使用（`UsageStatsManager` 近 7 天前台时长，
+排除桌面与本模块，缓存 10 分钟）、不补位（未自定义的内圈留空，默认圆弧仍按最近使用）。
+补位跳过当前前台应用：`ModuleEnvironmentState.observeForeground`（回调处在 ATMS 锁内，只投递）→ 协调器
+`onForegroundChanged` → `ColorOsAppCatalog.updateForeground` + 刷新；固定项不受影响。
+「更多」顶部顺序与补位依据一致（最常使用时按常用）；开机后第一次刷新在读全部名称前先发布这批应用，面板不空等。
+
 **「更多」面板**　不替换原厂面板，而是接管它的内容视图：`ColorOsAllAppsContent` 构造侧边栏自己的面板类，
 `FavoriteGroupInjector` 在 `bindAdapter` 时**原地改写同一个 ArrayList**（不换对象、不 notify）；
 点击回调按 `alias` 回查而不是按索引分发，避免搜索后索引错位打开错误应用。
+数据源头（侧边栏 16.11.3 字节码核对）：adapter 的 `mData` 就是 `SearchHelper.currentDataList` 同一个对象，
+原厂所有重灌都是 `clear(); addAll(工具折叠/展开/不折叠列表)`，出现在 `buildAllList`、`fuzzyMatch`（空串即退出搜索）、
+`buildCollapseList`、`buildExpandList`、`onDynamicIconChanged`。`SidebarHookInstaller.installPanelDataHooks`
+在这些方法返回后、只对模块面板的 SearchHelper 换回「收藏 + 最近」并 notify；带标题才接管，搜索结果原样保留。
+不再用定时器、数据观察者或 `applyIfStale` 追赶。分组标题行是 `LabelViewHolder`，文案来自 viewType 对应布局的固定字符串，
+原厂 `onBindViewHolder` 不处理它；`title_bind` 钩子（`AllAppRecyclerAdapter.onBindViewHolder` 返回后）
+按登记角色写入文案（`PanelGroupLabels`）。
 
 **面板工具小窗**　付款码、扫一扫这类工具由侧边栏自建 Intent，经 `AppPlatformUtils.n(Intent, Bundle, UserHandle)`
 交给系统 uid 代发，界面进程无法重发（目标是第三方未导出 Activity）。做法是点击前登记目标包，
@@ -160,23 +195,50 @@ config/ apps/ framework/ log/
 - 扇形命中半径 40–140 dp，默认 100 dp；选中放大 1.2×
 - 触发范围 24–160 dp，默认 84 dp
 - 扇形条目数 1–6，小窗数量 1–5（两个上限不同，不可混用）
+- 多圆弧 1–4 条：默认圆弧放「数量上限」内条目 +「更多」，内侧圆弧容量 5/4/3（`RadialArcPlan`）；默认圆弧固定项仍存 `corner_targets_v2`（上限 6），第 2～4 圈各存 `corner_targets_arc{2,3,4}_v1`（上限 5/4/3，空即按补位方式填充），减少圆弧条数不清除；启动前核对用 `allPinnedTargets`；广播 `EXTRA_INNER_ARC_TARGETS` 携带内圈固定项
+- 圈距 `min(1.3 × 图标, (外半径 − 2.27 × 图标)/(条数 − 1))`，不小于图标直径；角落空白区 = 最内一圈半径 − 圈距
+- 补位方式 `radial_fill_source`：0 最近使用（默认）/ 1 最常使用 / 2 不补位
+- 震动：同圈换格 `CLOCK_TICK`（80 ms 节流）；跨圈换格 `GESTURE_THRESHOLD_ACTIVATE`（不节流），圈号见 `RadialArcPlan.arcOfIndex`
+- 跨圈移动固定项走 `FrameworkConnectionRepository.moveTargetToArc`（`ArcPins.move`），两圈一次提交、一次广播；含未启用的圈
+- 命中范围预览按 `RadialArcPlan.expectedArcCounts`（默认圆弧按数量上限，内圈按固定项 / 容量 / 不补位为 0）
 - 双击关窗阈值 `ViewConfiguration.getDoubleTapTimeout()` = 300 ms
-- 面板数据在 `bindAdapter` 时原地改写，不 notify、不换对象
+- 面板数据原地改写同一个 ArrayList、不换对象；原厂源头重灌（见第三节）返回后才换回「收藏 + 最近」并 notify
 
 ## 六、构建、签名与发布
 
-- 只能走 GitHub Actions（`workflow_dispatch`，ref = main），release 已开 R8
-- CI 产物未签名，本地两步：`zipalign -P 16 -f 4` → `apksigner sign`
-  - 密钥 `release.keystore`，口令 `android`，别名 `flymefreeform`，证书 `CN=Hoerire, O=FlymeFreeform, C=CN`
-  - 签名方案要 v1+v2+v3 全开：apksigner 按 APK 的 minSdk(35) 默认只写 v3，必须加 `--min-sdk-version 23`
-  - 校验：`apksigner verify -v --min-sdk-version 23` 三项全 true；`zipalign -c -P 16 4` 通过
-- `/storage` 是 noexec：装机先 `cp` 到 `/data/local/tmp` 再 `pm install -r -d`
-- 上传 Release 资产用 node fetch + Buffer（本机 curl 是 node wrapper，`--data-binary` 会传成 25 字节）
-- 一次发布同步三处：① 源码仓库 main　② 源码仓库 Release（tag `v<版本名>`）　③ LSPosed 一侧
-  （模块仓库 Release，tag `<versionCode>-<版本名>`，与介绍页 README）。后两处资产与源码仓库那份必须同一摘要
-- 介绍页 README 由主仓库 README 转换：去 shields 徽章块、`<h1 align="center">` 改 `# `、相对图片路径改 raw 绝对地址
-- 提交历史保持单条：`commit --amend` 后 `push -f`；纯内部修复不新建 tag，只换同名资产
-- 换签名会导致覆盖安装失败（1.3.6 起改用个人证书，旧版升级需先卸载一次）
+**签名密钥**　项目根目录 `release.keystore`，维护者 ZaiLinn 自己的密钥（2026-11-08 生成，别名 `flymefreeform`，
+证书 `CN=ZaiLinn, O=FlymeFreeform, C=CN`，权限 600，被 `.gitignore` 的 `*.keystore` 排除）。
+- 必须保留并另行备份；丢失后已装用户无法覆盖升级
+- 口令不写进任何文件、不进对话：脚本依次读环境变量 `FLYMEFREEFORM_KS_PASS`、钥匙串条目 `flymefreeform-release`
+  （`security add-generic-password -a "$USER" -s flymefreeform-release -w` 添加一次）、交互输入，经 `env:` 传给 apksigner
+- 与 Hoerire 官方版、调试签名版互不能覆盖安装；从它们切换过来需先卸载（设置会丢）
+
+**构建**　一律用 `local-release.sh`（只在用户明确说「构建」之后）：
+
+```
+sh local-release.sh               # 单测 + assembleRelease + zipalign -P 16 + v1/v2/v3 签名 + 两项校验，产物落 out/
+sh local-release.sh --sign-only   # 只对 app/build/outputs/apk/release/ 下已有的未签名产物重新对齐、签名、校验
+sh local-release.sh --archive     # 另把源码打包到 tmp/ 并 adb push 到 /storage/emulated/0/（交付前用）
+```
+
+- 签名方案 v1+v2+v3 全开（`--min-sdk-version 23`），校验 `apksigner verify -v --min-sdk-version 23` 三项全 true、
+  `zipalign -c -P 16 4` 通过；脚本任一项不过即退出
+- 没有 `release.keystore` 时脚本退回 `~/.android/debug.keystore`，产物名带 `-debugsigned`，只供本机临时验证
+- R8 会把入口类改名（如 `l01`），`META-INF/xposed/java_init.list` 同步改写，属正常
+- `./gradlew` 无执行位，用 `sh ./gradlew`；`ANDROID_HOME=~/Library/Android/sdk`
+- CI：`.github/workflows/build.yml` 在 push main 或手动触发时出**未签名** APK（artifact `FlymeFreeform-apk`）。
+  CI 不持有密钥；要发 CI 产物，下载后放到 `app/build/outputs/apk/release/` 再 `sh local-release.sh --sign-only`
+
+**安装**　`adb install -r out/<产物>.apk`（只在用户明确说「装」之后）；生效范围见第七节末尾。
+
+**发布**　只在用户明确要求时推送或发布，目标是 `ZaiLinn/FlymeFreeform`：
+- 源码仓库 main；Release 用 tag `v<版本名>`，资产为 `local-release.sh` 签好的 `out/` 产物，摘要以 sha256 记入第十节
+- LSPosed 模块仓库（`Xposed-Modules-Repo/io.github.zailinn.flymefreeform`）尚未建立；建立后其 Release 资产须与源码仓库同一摘要，
+  介绍页 README 由主 README 转换：去 shields 徽章块、`<h1 align="center">` 改 `# `、相对图片路径改 raw 绝对地址
+- remote：`origin` = `ZaiLinn/FlymeFreeform`，`upstream` = `Hoerire/FlymeFreeform`（2026-11-08 设置）。绝不向 `upstream` 推送
+- `origin/main` 目前与 `Mangi-11/FlymeFreeform` 的 main 完全相同（`2475af1`，0.1.9），与本地历史（基于 Hoerire 的
+  单条提交 `87c0aaa`）**没有共同祖先**，不能直接快进推送；推送方式（新分支 / 覆盖 main）由用户决定。
+  `upstream/main` 已被 Hoerire 强推为 `f6d03ac`，本地仍基于旧的 `87c0aaa`
 
 ## 七、日志与排障
 
@@ -200,6 +262,9 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 | 通知 | `NOTIF_BUNDLE_ZOOM` 的 dropped；钩子缺失看 `NOTIF_BUNDLE_HOOKED_*` |
 | 横幅未移除 | `NOTIF_HEADS_UP_MANAGER_NULL`（未取到实例）/ `NOT_HEADS_UP`（时机过晚） |
 | 扇形被拦 | `SYSTEM_GESTURE_REJECTED_<原因>` |
+| 扇形目录耗时 | `SYSTEM_CATALOG_RADIAL_<ms>MS_<项数>`（扇形就绪）、`SYSTEM_CATALOG_PANEL_ORDER_<ms>MS_<n>`（面板可开）、`SYSTEM_CATALOG_PANEL_<ms>MS_<n>`（图标补齐）；`SYSTEM_CATALOG_ICON_MISSING_<n>` 表示扇形图标读取失败、退回按总数均分 |
+| 呼出时目录状态 | `SYSTEM_OVERLAY_HIT_RANGE_<dp>DP_…_APPS_<n>_PANEL_<n>`；`APPS_0` 后跟 `SYSTEM_CATALOG_EMPTY_REFRESH` 即目录未就绪 |
+| 面板数据接管 | `PANEL_DATA_HOOKS_INSTALLED_<n>`（应为 6：5 个重灌方法 + 标题绑定）；缺哪个看 `PANEL_REFILL_HOOK_UNAVAILABLE_<方法名>` |
 | 作用域外的子进程 | `MODULE_SKIPPED_UNEXPECTED_PROCESS_<进程名>`，DEBUG 级属正常 |
 
 面板工具注入后 system_server 侧对应那条会显示 `okfalse`——参数已在侧边栏写好，注入器读到
@@ -229,34 +294,46 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 3. 能只重启一个进程就不重启设备
 4. 注释与提交信息第三人称陈述，只写做什么、为什么、约束是什么
 5. 不在手机上跑 Gradle；不跨进程用静态字段通信；不按固定次数 `postDelayed` 撞系统数据
-6. 面板数据不能按文本改标题（两个标题都叫「工具」，须按视图树顺序取），不能读 `UserPanelView.getRecentData()`（占位内容）
+6. 面板分组标题不能按文本或先后改名（标题行文案由 viewType 布局决定，两段都显示「工具 / Tools」，且随系统语言变化）：注入器按对象身份登记标题角色（`FavoriteGroupInjector.titleRole`），`title_bind` 钩子在 `onBindViewHolder` 返回后按角色改写可见标题，文案随语言取「收藏/最近」或「Favorites/Recent」；不能读 `UserPanelView.getRecentData()`（占位内容）
+9. 扇形目录不得在刷新路径上加载全部应用图标；新增补位来源或排序时，只能在「挑选条目」一步做，图标仍按条目缓存
 7. 不在 SystemUI 侧改写通知点击入口（回调不稳定，命中失败会丢弃原始事件）
 8. 工程纪律：构建输出落 `out/`、临时文件落 `tmp/`、`release.keystore` 必须保留、交付前 `tar -czf` 打包放存储根目录
 
 ## 十、当前状态
 
-更新时间：2026-11-08 00:56（Asia/Shanghai）
+更新时间：2026-11-08 09:40（Asia/Shanghai）
 
 | 项 | 值 |
 |---|---|
-| 版本 | 1.3.6 / 2026110717（资产同名替换，以 sha256 为准，不以版本号为准） |
-| 功能状态 | **超限关窗已移除**（`OverflowCloseHook.kt` 删除，安装调用移除）；超限回到系统默认的边缘浮标 |
-| 远端 main | `0816306`（单条提交 force push；提交号每轮重建，以 `git rev-parse HEAD` 为准） |
-| 设备已装 | `869ebd78…c981`（00:54:40 装，2056495 B）——**这是当前唯一有效版本** |
-| 上一版（已作废） | `10115b43…`（带冷却的关窗版）、`1f89fc39…`（带冻结版）、`56137ecf…`（prevTask 版）、`76409b26…`（taskId 版）——全部不要再装 |
-| 源码 Release / 模块仓库 Release | 仍是 `56137ecf…77d7`，**尚未更新**，与设备不一致 |
-| 归档 | `/storage/emulated/0/FlymeFreeform-src-20261108.tar.gz`（被打包时的内容，早于本次移除，摘要以实测为准） |
+| 版本 | 1.3.6 / 2026110717（版本号未改，以 sha256 为准） |
+| 工作副本 | `~/Documents/Code/FlymeFreeform`，基于 `87c0aaa`，改动**未提交、未推送**；`origin` = 用户 fork（内容为 Mangi-11 0.1.9，与本地无共同历史），`upstream` = Hoerire |
+| 最新构建 | `out/FlymeFreeform-v1.3.6.apk`，sha256 `bdff3a84…ba44`，2117935 B，用户密钥签名（证书 SHA-256 `14f19d42…4b52`），包名 `io.github.zailinn.flymefreeform`；含包 A–E 全部改动（用户要求直接出最新包，未按一包一改拆分）；**未安装** |
+| 设备已装 | `beec312c…86d7`（调试签名 `CN=Android Debug`，v1/v2/v3 均通过、`-P 16` 对齐通过），system_server 已重启，运行中 |
+| 设备包包含 | 多圆弧（1–4 条）与按圈自定义内圈、「更多」分组标题与搜索返回修复、扇形目录两步发布与缓存、两圈时第二圈命中范围加宽 |
+| 已改未打包（按包拆分计划） | 包 A：「更多」面板图标按需加载（`PanelIconLoader`）+ 目录日志改走 `ModuleLog.debug`（`ICON_MISSING` 不再常开）+ 开机首次先发布常用/最近一批　包 B：扇形应用页左右滑动切圈、增删展开/收起动画、跨圈移动固定项（只需重开模块应用）　包 C：补位方式（最近使用/最常使用/不补位）+「更多」顶部随补位依据 + 补位跳过前台应用　包 D：跨圈换格震动　包 E：命中范围预览按各圈实际条数（模块应用）。另有包名改为 `io.github.zailinn.flymefreeform`（随第一次换签名一起装） |
+| 单元测试 | 161 项全部通过（3 项 skip） |
+| 工具 | `local-release.sh`、`restart-gate.sh` 已补（均列入 `.gitignore`，与本文件一样不随仓库分发） |
+| 包名 | 源码已改为 `io.github.zailinn.flymefreeform`（目录、namespace、applicationId、`java_init.list`、广播 action、权限名）；设备上仍是旧包名 `io.github.hoerire.flymefreeform` 的 `beec312c`。新包名是另一个应用：装之前先在 LSPosed 停用并卸载旧模块，再给新模块重新勾选作用域（system_server、SystemUI、桌面、智能侧边栏）并重启 |
+| 关于页 | 只保留一个「项目地址」→ `ZaiLinn/FlymeFreeform`；上游地址与致谢移到 README |
+| 签名 | 用户已生成自己的 `release.keystore`（`CN=ZaiLinn`）；`local-release.sh` 已改为从环境变量 / 钥匙串 / 交互读口令。设备上仍是调试签名包，换用户密钥签的包需先卸载一次 |
+
+### 实测（`dc0bcfef` 版，即目录两步发布首版，重启后）
+
+- system_server 重启后约 46 秒扇形就绪：`SYSTEM_CATALOG_RADIAL_552MS_6`；第一次呼出 `APPS_6`
+- 之后每次刷新扇形 2–98 ms；首次补齐面板 530 个图标 14.4 秒（期间「更多」为空），之后 11–50 ms
 
 ### 下一步（按序）
 
-1. 重启 system_server 后确认日志里不再出现 `OVERFLOW_HOOK_INSTALLED` / `OVERFLOW_CLOSE_DIRECT`，
-   切应用时看到系统边缘浮标即为正常
-2. 两处 Release 资产要换成 `869ebd78…`，归档重新打包，否则发布物与设备不一致
-3. 小窗数量上限目前仍设成 1；若不要频繁出浮标，可拖回 5（系统默认）
-4. 下次发布前仍走「开工闸门」五步，重启一律经 `restart-gate.sh`
+0. 改包名与换签名合在一次切换里做：LSPosed 停用并卸载旧模块 → 装用户密钥签的新包名包 → 勾选作用域 → 重启；模块设置需重新配置
+1. 包 A–E 分开构建验证（改动在同一工作区，需先分开提交或按文件分批构建）：
+   A 看 `SYSTEM_CATALOG_PANEL_ORDER` 耗时与重启后立刻点「更多」；B 看滑动切圈、增删动画、跨圈移动；
+   C 看三种补位方式与前台应用不进补位；D 看跨圈震动；E 拖命中范围滑条看预览
+2. 提交工作副本；是否推到 `ZaiLinn/FlymeFreeform` 等用户决定
+3. 待评估：滑选时显示应用名
 
-### 本轮的坑（新会话别再踩）
+### 本轮的坑
 
-- 一次改动 force push 了四次，于是同时挂了三个「等构建」的后台任务，其中两个等的是已被覆盖的旧提交 —— 改完之后只保留最后一个 sha 的等待器
-- 判断「设备上是不是新代码」要拿 APK 的 sha256 与 CI 产物比，不要看版本号，版本号一直是 1.3.6
-- grep -c 计数为 0 时退出码是 1，用 && 串起来的安装链路会整条断掉，改用 ;
+- 扇形目录曾在每次刷新时把全部应用（本机 537 个）图标画成位图：增减固定项要等数秒、开机后首次呼出空扇形
+- 角落空白区若以「最内一圈图标内沿」为界，两圈时第二圈只剩约 50 基准 dp 宽
+- `ConcurrentHashMap` 上用 Kotlin `in` 会调用 `contains` = `containsValue`，必须写 `containsKey`
+- 一次打包混入多个改动（首个 release 包含多圆弧、面板标题、搜索返回三项），出问题无法定位；之后一包一改

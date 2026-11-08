@@ -15,6 +15,9 @@
 
 模块以 Xposed 模块形式运行，不安装常驻服务，不接管窗口管理，只补齐入口与开关。多任务、分屏、窗口堆叠等行为保持系统原生。
 
+- 项目地址：[ZaiLinn/FlymeFreeform](https://github.com/ZaiLinn/FlymeFreeform)
+- 上游：[Hoerire/FlymeFreeform](https://github.com/Hoerire/FlymeFreeform)（本项目由此 fork）← [Mangi-11/FlymeFreeform](https://github.com/Mangi-11/FlymeFreeform)（原始项目）
+
 ## 预览
 
 <p align="center">
@@ -37,7 +40,8 @@
 - **保持挂起**：松手后菜单不收起，可以继续滑动点选应用
 - **触发范围**：底角手势的识别区域大小，24–160 dp
 - **命中范围**：手指与图标的判定半径，40–140 dp，默认 100 dp
-- **数量上限**：扇形中同时显示的条目数，1–6；「更多」入口不占位
+- **数量上限**：默认圆弧中同时显示的条目数，1–6；「更多」入口不占位
+- **多圆弧**：开启后可选 1–4 条圆弧。第 1 条为默认圆弧，保留数量上限内的快捷项与「更多」入口；新增圆弧依次向内收拢，容量为 5、4、3 项，越往内越少
 
 <p align="center">
   <img src="docs/images/trigger-range.jpg" width="330" alt="触发范围设置" />
@@ -54,7 +58,8 @@
 菜单由模块自行绘制，条目与顺序独立于智能侧边栏。
 
 - **混合固定**：应用、分身应用、侧边栏工具与快捷入口可加入同一份列表
-- **拖动排序**：长按拖动调整顺序，最多六项
+- **拖动排序**：长按拖动调整顺序，默认圆弧最多六项
+- **按圈自定义**：开启多圆弧后，扇形应用页按「第 1 圈～第 N 圈」分页编辑，内侧各圈最多 5、4、3 项。某圈留空时按「补位方式」补满（最近使用 / 最常使用：近 7 天前台时长 / 不补位：未自定义的内圈留空），添加后只显示所选应用；同一条目只能固定在一圈，在添加列表里点已固定在别圈的条目即可移到本圈。减少圆弧条数不会清除多出那几圈的固定项，再次增加时原样恢复
 - **滑动选中**：滑到某一格时该图标放大至 1.2 倍作为反馈，判定依据是手指与图标圆心的距离，松手即启动
 
 <p align="center">
@@ -134,7 +139,8 @@
 
 ## 致谢
 
-- [Mangi-11/FlymeFreeform](https://github.com/Mangi-11/FlymeFreeform)：本项目的上游来源，原作者 Mangi-11
+- [Hoerire/FlymeFreeform](https://github.com/Hoerire/FlymeFreeform)：本项目直接 fork 的上游，作者 Hoerire；ColorOS 适配、「更多」面板接管、启动判定等大部分实现出自该项目
+- [Mangi-11/FlymeFreeform](https://github.com/Mangi-11/FlymeFreeform)：最初的上游来源，原作者 Mangi-11
 - [Flyme](https://www.flyme.com/)：小窗交互的设计参考
 - [libxposed API](https://github.com/libxposed/api)：现代 Xposed API
 - [Miuix](https://github.com/compose-miuix-ui/miuix)：UI 组件库

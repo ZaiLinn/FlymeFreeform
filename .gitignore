@@ -54,6 +54,8 @@ artifact.zip
 
 # 本地工程纪律（不随仓库分发）
 /CONSTRAINTS.md
+/restart-gate.sh
+/local-release.sh
 
 # Local build output
 out/
