@@ -1,6 +1,6 @@
 # FlymeFreeform 实现说明
 
-源码版本 1.4.2 / versionCode 2026110839（本轮未构建 APK）　包名 `io.github.zailinn.flymefreeform`
+源码版本 1.4.5 / versionCode 2026110845（已装机）　包名 `io.github.zailinn.flymefreeform`
 源码 `ZaiLinn/FlymeFreeform`（维护者 ZaiLinn；fork 自 `Hoerire/FlymeFreeform` ← `Mangi-11/FlymeFreeform`，致谢见 README）
 工作副本 `~/Documents/Code/FlymeFreeform`（macOS），临时文件 `tmp/`；构建、签名与发布见第六节。
 包名于 2026-11-08 由 `io.github.hoerire.flymefreeform` 改为现名，设备上的旧包名模块需卸载后再装新包。
@@ -113,7 +113,7 @@ config/ apps/ framework/ log/
 用 `saveLayer` + `SrcIn` 把渐变填进模板，模板按源图标跨次呼出缓存（`MorePlateMasks`）；取不到模板时退回 0.25 圆角方形。
 内侧圆弧每向内一圈乘步进——两条圆弧 0.92，三四条 0.95（用户定）；角落空白区与设置页命中预览同样按最内圈缩小后的直径。
 屏幕中央所选应用卡片（开关 `radial_center_preview` 默认关、`radial_center_label` 默认开）：`CornerRadialOverlayView.drawCenterPreview` 在扇形画布上画，
-不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长 2×（最长 1024 px）从 `DENSITY_XXXHIGH` 图标重画（再走 `IconShapes`），不放大扇形那份位图，最近 4 个缓存在目录里；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
+不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长 1.5×（最长 1024 px，默认尺寸单张约 1.6 MB）从 `DENSITY_XXXHIGH` 图标重画（再走 `IconShapes`），不放大扇形那份位图，最近 4 个缓存在目录里；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
 淡入淡出 120 ms、换项从 0.94 弹回；选中「更多」不显示。开关与大小经 `begin(centerPreview, centerLabel, centerSizeDp)` 每次呼出从 `lastSettings` 传入，不依赖目录快照。
 
 **扇形目录**　`ColorOsAppCatalog` 在 system_server 的单线程执行器里工作，一次刷新分两步发布：
@@ -352,6 +352,39 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
+2026-11-08 20:52 安装 1.4.5（2026110845，sha256 `61288bd1b65513b6d3465a3911b142e0289b9cfb099e29785d02fec34841d014`）并重启 system_server，随后强行停止模块 App。重启后 4 个进程均 `MODULE_CONFIG_READY`，starter 钩子、手势 coordinator、双击横条钩子已装；`STARTER_EFFECT_FAILED_query_warmup` 不再出现，无锁违规、探针不可用或手势许可失败。首次打开「更多」：`PANEL_INDEX_INSET laidOut=true` 紧接 `PANEL_INDEX_INSET_BEFORE_DRAW`，即内边距在首帧绘制前补上、该帧被取消（pre-draw 时已布局属正常）；是否仍左移待用户目测。X 小窗内换链接重开尚未测。
+
+
+源码 versionCode 2026110845：用户反馈 1.4.4 打开「更多」时图标仍左移。原因推断（adb 未连接，未看日志）：建卡片时列表还没挂上本面板 adapter，`recyclerView(exact = true)` 找不到目标；adapter 与列表首次布局同帧完成，逐帧摆索引条时才补内边距，已晚一帧。改为在卡片上挂 `OnPreDrawListener`，每帧绘制前查找，一旦找到列表就补内边距并取消该帧，记 `PANEL_INDEX_INSET_BEFORE_DRAW`；每次补内边距记 `PANEL_INDEX_INSET laidOut=<bool>`，设备上据此核对。关闭面板时移除监听。编译与单测通过，未构建。
+
+同一 versionCode 另修：1.4.4 日志在 system_server 启动早期出现一次 `STARTER_EFFECT_FAILED_query_warmup`（`IActivityManager.registerReceiverWithFeature` 空指针，AMS 尚未就绪），预热整体放弃；之后首次启动经过钩子时会重试，影响仅限开机最初几次启动。去掉 `install()` 里的预热，改由首次启动触发。
+
+
+2026-11-08 构建 1.4.4（versionCode 2026110844），`out/FlymeFreeform-v1.4.4.apk`，sha256 `fe3e0d8c8c4a40a934542d7272f535c2093709370aa960b9bcf650370bf00bf7`。在 1.4.3 基础上加入设置页合并与说明修正。未安装、未重启。装机须重启 system_server。
+
+源码 versionCode 2026110844：合并页里横屏 / 游戏模式的说明由「暂停模块增强」改为「暂停扇形呼出；小窗功能不受影响」，与 `ModuleEnvironmentState` 实际行为一致（只有排除列表同时影响小窗跳转）。README 设置说明改为两组，删去「生效范围」小节与 `docs/images/settings-scope.png` 引用，`settings-zoom.png` 待重截。编译、单测与 lintVitalRelease 通过。
+
+
+源码 versionCode 2026110843：合并入口与页面标题由「小窗交互与生效范围」精简为「小窗设置」，继续共用同一字符串资源，release Kotlin 编译通过。仅文案调整，排除列表位置与说明不变；未构建 APK、未安装、未重启、未推送。
+
+源码 versionCode 2026110842：基于当前目录最新代码，将「小窗交互」与「生效范围」合为「小窗交互与生效范围」。排除列表在合并页最上方；排除列表说明、空状态和「小窗跳转」摘要明确共用同一列表。原小窗设置与横屏 / 游戏模式暂停保留；首页只显示合并入口，旧生效范围导航状态兼容到合并页。release Kotlin 编译通过，单测 242 项、3 项跳过、0 失败；静态检查通过。保留本轮开始前已有的未提交启动链路与图标优化改动。仅编译与单测，不构建 APK、不安装、不重启、不推送。
+
+2026-11-08 构建 1.4.3（versionCode 2026110841），`out/FlymeFreeform-v1.4.3.apk`，sha256 `9e02bf894bc392db8188bf759e8c2ead8e90d8715b3cb37eedadd88589997b14`。包含 refactor/starter-hook 分支全部改动及本轮复核修复，未安装、未重启。装机须重启 system_server。
+
+源码 versionCode 2026110841：复核审计修复后的五处问题。
+1. 延迟重开写入小窗参数时带原调用方 pid/uid（`setActivityOptions(Bundle,int,int)`，缺失时用 `SafeActivityOptions.fromBundle(Bundle,int,int)`），不再用单参数版本在主线程以 SYSTEM_UID 包装调用方 options；回退原参数启动时沿用复制来的 SafeActivityOptions。两种写法都不可用时不关窗、不接管。
+2. 手势许可广播按值去重，客户端请求、用户切换、启动时强制发送。
+3. `UserManager.isUserVisible` 反射失败时退回「是否当前前台用户」并记一次 `ZOOM_REOPEN_USER_VISIBILITY_FALLBACK`；重开校验不通过记 `ZOOM_REOPEN_INVALID_<pkg>`。
+4. 锁探针增加 mSupervisor / mController 路径和按类型查找；探针不可用时控制中心查询仅在 execute 阶段放行，不再整体失效。
+5. starter PM 缓存在用户解锁 / 切换时只增量补充，不清空；查询带 MATCH_UNINSTALLED_PACKAGES。
+仅编译与单测（242 项，0 失败，3 跳过）。
+
+**装机须知**：手势许可由 system_server 发布，只重启 SystemUI 或桌面而不重启 system_server 时，新 SystemUI 收不到许可，角落手势不可用。装这一批必须重启 system_server。
+
+
+源码 versionCode 2026110840：中央预览绘制倍数由 2× 降为 1.5×（`PreviewIconSizing`），默认 96 dp、约 3.5 倍密度下单张由约 2.8 MB 降到约 1.6 MB，4 张缓存常驻 system_server 由约 11 MB 降到约 6 MB；最大尺寸仍触及 1024 px 上限（4 MiB）。仅编译与单测。
+
+
 第五组源码 versionCode 2026110839：starter 静态扫描遇到缺目录、空目录或读取错误均失败，并检查跨行调用与尾随 lambda；Gradle 编译 / check、CI 和本地发布接入。取消任务与队列拒绝均统一执行完成通知，回归验证准备状态释放。最终复核增加用户隔离记忆、重开票据身份、当前 Request 目标解析和 PM 缓存写回代数，队列拒绝后允许重试；关闭前核对任务用户及用户可见性。扫描器是源码模式检查，不替代锁序审查或运行时探针。
 
 
@@ -369,7 +402,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 | 项 | 值 |
 |---|---|
-| 版本 | 工作副本 1.4.2 / 2026110839（下次构建 versionName 再加）；设备为 1.4.2 / 2026110830（`out/FlymeFreeform-v1.4.2.apk`，sha256 `012ca69d…3641`，2026-11-08 18:35 装并重启 system_server）。v1.3.10 曾按用户要求覆盖重发（破例未加 versionName），重发资产为 2026110821 |
+| 版本 | 工作副本 1.4.5 / 2026110845；设备为 1.4.5 / 2026110845（`out/FlymeFreeform-v1.4.5.apk`，sha256 `61288bd1…d014`，2026-11-08 20:52 装并重启 system_server，之后强行停止模块 App）。v1.3.10 曾按用户要求覆盖重发（破例未加 versionName），重发资产为 2026110821 |
 | 本地构建 | `out/FlymeFreeform-v1.4.1.apk`，sha256 `04d7b8e7662f83d8542a036cef3d3c73689fd85596cfe51caa62d554c63cccbf`，用户密钥签名，已装设备、未发布。1.4.0 `1e847fe3…f358` 有死锁勿用；1.3.12 `2ce93a54…6cfd`；1.3.11 `b56e0400…42bd`；`out/FlymeFreeform-v1.3.10.apk` 为重发的 Release 资产 `afc03c6b…65f0`，首发包 `83d94a5e…2bf3` 备份在 `tmp/FlymeFreeform-v1.3.10-83d94a5e.apk` |
 | 工作副本 | `~/Documents/Code/FlymeFreeform`，本轮分支 `refactor/starter-hook`，基线 `c7f8c21`；A=`55b6510`，B=`813837b`，框架服务=`4825e37`；审计第一至四组=`763f57e` / `725dfcd` / `576e8f3` / `6604b29`，第五组包括最终复核与构建闸门，均未推送。原 main = `origin/main`。v1.3.7（`5ce7888`）之后：用户网页提交 `bdb6a30`（README 致谢精简），`a454470` 新设置项、`5a89d85` 「更多」原有列表 + 字母索引 + 回桌面收起、`9d1c35d` 扇形外大内小 + 屏幕中央所选应用 + 内置面板回桌面收起、`c1d0893` 添加应用快速点击闪动，之后是 1.3.10 版本号与文档、用户网页提交 `e3681e4`（README 去上游链接）、方形「更多」修复、README 换 png 截图，重发 1.3.10 的版本号与文档（v1.3.10 tag 所指，`b3562e0`）。之后 2026-11-08 按功能分组提交 1.3.11–1.4.3 的改动：`8d015c7` 侧边栏目录缓存与悬空绑定、`530fd2b` 设置广播共享身份与完整快照、`bd5f490` 「最近」排除扇形固定项、`1dd1297` 「更多」打开时图标左移、`bdc667b` 双击横条关闭、`aef03c5` 应用互跳小窗与死锁修复（含关窗重开）、`ac8cb85` 文档与版本号；中间提交未单独编译，HEAD 编译与单测通过；均未推送。前三个功能提交均在临时 worktree 单独编译通过；`upstream` = Hoerire |
 | 已发布 | Release [v1.3.10](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.10)，资产 `FlymeFreeform-v1.3.10.apk`（sha256 见「本地构建」）；上一版 v1.3.7 资产 `a8344244…61d3` |
