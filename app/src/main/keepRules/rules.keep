@@ -4,3 +4,8 @@
 -keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {
     public <init>();
 }
+
+# 设置页按底层 Binder 去重并监听死亡，反射字段不能移除或改名。
+-keepclassmembers class io.github.libxposed.service.XposedService {
+    private io.github.libxposed.service.IXposedService mService;
+}

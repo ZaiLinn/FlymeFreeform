@@ -5,6 +5,9 @@ import android.app.BroadcastOptions
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.DeadObjectException
+import android.os.IBinder
+import android.os.IInterface
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import io.github.zailinn.flymefreeform.config.ModulePreferences
@@ -24,6 +27,8 @@ import kotlinx.coroutines.flow.asStateFlow
 internal class FrameworkConnectionRepository(private val context: Context) {
     private val started = AtomicBoolean(false)
     private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
+    private val serviceBinders = IdentityHashMap<XposedService, IBinder>()
+    private val serviceDeaths = IdentityHashMap<XposedService, IBinder.DeathRecipient>()
     private val liveServices = IdentityHashMap<XposedService, Unit>()
     private val diedBeforeBind = IdentityHashMap<XposedService, Unit>()
     private val pendingServices = IdentityHashMap<XposedService, Unit>()
@@ -191,6 +196,7 @@ internal class FrameworkConnectionRepository(private val context: Context) {
 
     fun requestMissingScopes() {
         worker.execute {
+            reconcileServices()
             val connection = activeConnection ?: return@execute
             val current = mutableState.value
             if (!current.canRequestScope) return@execute
@@ -225,6 +231,7 @@ internal class FrameworkConnectionRepository(private val context: Context) {
 
     private fun updateSettings(transform: (ModuleSettingsSnapshot) -> ModuleSettingsSnapshot) {
         worker.execute {
+            reconcileServices()
             val connection = activeConnection ?: return@execute
             val previous = mutableState.value
             if (!previous.canChangeSettings) return@execute
@@ -277,21 +284,71 @@ internal class FrameworkConnectionRepository(private val context: Context) {
         if (diedBeforeBind.remove(service) != null) return
         if (liveServices.put(service, Unit) != null) return
         pendingServices[service] = Unit
+        watchBinderDeath(service)
+        // 新包装优先，避免同一 Binder 的旧 RemotePreferences 缓存被继续复用。
+        pruneServices(service)
         reconcileServices()
     }
 
     private fun handleServiceDied(service: XposedService) {
-        if (liveServices.remove(service) == null) {
+        if (!liveServices.containsKey(service)) {
             diedBeforeBind[service] = Unit
             return
         }
-        pendingServices.remove(service)
-        unavailableServices.remove(service)
-        if (activeConnection?.service === service) activeConnection = null
+        discardService(service)
         reconcileServices()
     }
 
+    /** Service 102 没有公开 Binder，字段名由 keep 规则保护；取不到时回退到只读 API 探测。 */
+    private fun serviceBinder(service: XposedService): IBinder? = serviceBinders[service] ?: runCatching {
+        val field = XposedService::class.java.getDeclaredField("mService").also { it.isAccessible = true }
+        (field.get(service) as? IInterface)?.asBinder()
+    }.getOrNull()?.also { serviceBinders[service] = it }
+
+    private fun watchBinderDeath(service: XposedService) {
+        val binder = serviceBinder(service) ?: return
+        val recipient = IBinder.DeathRecipient { worker.execute { handleServiceDied(service) } }
+        try {
+            binder.linkToDeath(recipient, 0)
+            serviceDeaths[service] = recipient
+        } catch (_: android.os.RemoteException) {
+            // 已死亡的 Binder 会在紧随其后的 pruneServices 中移除。
+        } catch (_: RuntimeException) {
+            // 监听不可用时仍保留框架原有死亡回调，不能阻止连接激活。
+        }
+    }
+
+    /** 死亡是确定状态；权限、能力或暂时性读取失败不代表旧对象已经失效。 */
+    private fun serviceAlive(service: XposedService): Boolean {
+        serviceBinder(service)?.let { return it.isBinderAlive }
+        return try {
+            service.apiVersion
+            true
+        } catch (error: RuntimeException) {
+            generateSequence<Throwable>(error) { it.cause }.none { it is DeadObjectException }
+        }
+    }
+
+    private fun pruneServices(preferred: XposedService? = null) {
+        val candidates = buildList {
+            if (preferred != null && liveServices.containsKey(preferred)) add(preferred)
+            liveServices.keys.filterTo(this) { it !== preferred }
+        }
+        FrameworkServiceSelection.obsolete(candidates, ::serviceAlive, ::serviceBinder).forEach(::discardService)
+    }
+
+    private fun discardService(service: XposedService) {
+        liveServices.remove(service)
+        pendingServices.remove(service)
+        unavailableServices.remove(service)
+        val binder = serviceBinders.remove(service)
+        val recipient = serviceDeaths.remove(service)
+        if (binder != null && recipient != null) runCatching { binder.unlinkToDeath(recipient, 0) }
+        if (activeConnection?.service === service) activeConnection = null
+    }
+
     private fun reconcileServices() {
+        pruneServices()
         if (liveServices.size > 1) {
             mutableState.value = multipleServicesState()
             return
@@ -395,6 +452,11 @@ internal class FrameworkConnectionRepository(private val context: Context) {
         }
 
     private fun isolateFailedConnection(connection: ActiveConnection, previous: FrameworkConnectionState) {
+        if (!serviceAlive(connection.service)) {
+            discardService(connection.service)
+            reconcileServices()
+            return
+        }
         activeConnection = null
         val failed =
             previous.copy(
