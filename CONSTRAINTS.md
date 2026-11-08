@@ -41,7 +41,7 @@
 | com.android.launcher | `LauncherHookInstaller` | 桌面侧底角触摸监听 |
 | com.coloros.smartsidebar:ui | `SidebarHookInstaller` | 「更多」面板接管、面板工具小窗注入 |
 
-跨进程通信只有两条路：侧边栏走 Binder（`SidebarProtocol`），模块应用与框架走 SharedPreferences 与广播。**没有静态字段共享**。
+跨进程通信：侧边栏走 Binder（`SidebarProtocol`），模块应用与框架走 SharedPreferences 与广播；system_server 向 SystemUI / 桌面广播手势许可（验证 SYSTEM_UID，共享发送身份）。**没有静态字段共享**。
 
 ## 二、目录
 
@@ -351,6 +351,9 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 8. 工程纪律：构建输出落 `out/`、临时文件落 `tmp/`、`release.keystore` 必须保留、交付前 `tar -czf` 打包放存储根目录
 
 ## 十、当前状态
+
+第三组源码 versionCode 2026110837：手势入口收到 system_server 经 UID 校验的许可后才接管；许可在前台、设置、环境和用户切换时更新，触摸路径只读缓存。广播有调度延迟，前台切换边界仍须设备验证。窗外关闭只接受从 DOWN 实际捕获的流。黑名单变更在串行写入队列按包合并，选择页即时反馈待确认状态。
+
 
 第二组源码 versionCode 2026110836：所有改写先核对排除和锁屏；用户来自 Request；当前启动控制中心来源仅在探针确认未持 WM 锁时读取，嵌套阶段共享本次观察；PM 查询移到专用工作线程。延迟重开复制 Request 身份与 grants，执行前复核，失败回退原参数启动；反射预检失败则不关窗、不接管。
 

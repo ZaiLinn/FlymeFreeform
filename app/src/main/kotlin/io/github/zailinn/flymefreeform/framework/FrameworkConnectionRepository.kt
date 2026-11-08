@@ -148,8 +148,9 @@ internal class FrameworkConnectionRepository(private val context: Context) {
     fun setZoomLaunch(enabled: Boolean) =
         updateSettings { it.copy(zoomLaunch = enabled) }
 
-    fun setBlacklistPackages(packages: List<String>) =
-        updateSettings { it.copy(blacklistPackages = ModulePreferences.decodePackages(ModulePreferences.encodePackages(packages))) }
+    fun setBlacklistPackage(packageName: String, excluded: Boolean) =
+        updateSettings { it.copy(blacklistPackages =
+            io.github.zailinn.flymefreeform.config.BlacklistEdits.apply(it.blacklistPackages, packageName, excluded)) }
 
     fun setPinnedTargets(components: List<PinnedTarget>) =
         updateSettings {

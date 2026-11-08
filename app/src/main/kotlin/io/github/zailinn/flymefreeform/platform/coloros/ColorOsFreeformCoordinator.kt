@@ -55,6 +55,9 @@ internal class ColorOsFreeformCoordinator(
 ) : CornerRadialOverlayView.Listener {
     private val context = readField(controller, "mContext") as Context
     private val handler = Handler(Looper.getMainLooper())
+    private val gesturePermissions = io.github.zailinn.flymefreeform.hook.GesturePermissionPublisher(
+        context, handler, ::isGestureEnvironmentAllowed,
+        { logger(Log.WARN, "GESTURE_PERMISSION_FAILED", it) })
     private val catalogExecutor =
         ThreadPoolExecutor(
             1,
@@ -130,6 +133,7 @@ internal class ColorOsFreeformCoordinator(
 
     fun start() {
         handler.post {
+            gesturePermissions.start()
             entryCatalog.start()
             environmentState.start(context)
             environmentState.observe { applySettings(configuration.snapshot) }
@@ -144,8 +148,11 @@ internal class ColorOsFreeformCoordinator(
         logger(Log.INFO, "SYSTEM_GESTURE_COORDINATOR_READY", null)
     }
 
+    fun onWindowFocusChanged() { handler.post { gesturePermissions.publish() } }
+
     /** 前台应用变了：补位不该再放正在用的应用（用小窗再开自己没有意义），让目录按新的前台重挑一次。 */
     private fun onForegroundChanged(packageName: String?) {
+        gesturePermissions.foregroundChanged()
         appCatalog.updateForeground(packageName)
         if (pointerRegistered && lastSettings.enabled) appCatalog.refresh(lastSettings)
     }
@@ -217,6 +224,7 @@ internal class ColorOsFreeformCoordinator(
                 settings.pinnedTargets != lastSettings.pinnedTargets ||
                 settings.innerArcTargets != lastSettings.innerArcTargets
         lastSettings = settings
+        gesturePermissions.publish()
         if (environmentState.isGestureAllowed(refreshKeyguard = true) && (settings.leftCornerEnabled || settings.rightCornerEnabled)) {
             val resuming = !pointerRegistered
             if ((resuming || selectionChanged) && settings.allPinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
@@ -771,7 +779,8 @@ internal class ColorOsFreeformCoordinator(
         if (!environmentState.isGestureAllowed(refreshKeyguard = true)) return false
         if (isCriticalSystemUiForeground()) return false
         // 排除列表命中时不接管手势：不是「呼出后再关闭」，而是保持系统原样。
-        return !lastSettings.isBlacklisted(focusedWindowPackage())
+        val focused = focusedWindowPackage() ?: return false
+        return !lastSettings.isBlacklisted(focused) && !environmentState.isForegroundExcluded()
     }
 
     private fun isDynamicEnvironmentAllowed(): Boolean = environmentState.isGestureAllowed()

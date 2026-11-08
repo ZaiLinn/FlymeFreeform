@@ -637,10 +637,7 @@ internal class OutsideTapCloseHookInstaller(
                 engine.interrupt()
                 return null
             }
-            // 只有标题输入层已从 DOWN 起接管窗外区域时才启用关闭判定。
-            // 系统通道（通知中心、控制中心、横幅）拉起的小窗，触摸区在窗口仍为全屏时
-            // 已更新一次，窗外区域为空，不产生保护标记。防穿透取决于触摸区扩展本身，
-            // 与该判定无关，因此未标记保护的小窗同样允许窗外关闭。
+            // 标题输入层须在 DOWN 时实际覆盖窗外区域，才能避免关闭与底层点击同时生效。
             val protected = isProtected(task)
             io.github.zailinn.flymefreeform.log.ModuleLog.debug("FFOUT") {
                 "OUTSIDE_TAP_DOWN_protected_" + protected
@@ -651,7 +648,7 @@ internal class OutsideTapCloseHookInstaller(
                 x = event.rawX,
                 y = event.rawY,
                 eventTime = event.eventTime,
-                captured = true,
+                captured = protected,
             )
             return null
         }

@@ -38,6 +38,8 @@ internal class LauncherHookInstaller(
     private val environmentState = ModuleEnvironmentState(configuration) { code, exception ->
         module.log(Log.WARN, TAG, code, exception)
     }
+    private val gesturePermission = GesturePermissionClient { if (!permissionAllowed()) cancelClaim() }
+    private fun permissionAllowed(): Boolean = gesturePermission.allowed
     private var environmentStarted = false
     private var activeConfig: CornerGestureConfig? = null
     private var activePointerId = -1
@@ -148,7 +150,7 @@ internal class LauncherHookInstaller(
         }
         if (!suppressUntilTerminal) return false
 
-        if (!environmentState.isGestureAllowed()) cancelClaim()
+        if (!gesturePermission.allowed || !environmentState.isGestureAllowed()) cancelClaim()
 
         when (event.actionMasked) {
             MotionEvent.ACTION_MOVE -> {
@@ -197,7 +199,7 @@ internal class LauncherHookInstaller(
         if (!event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) return null
         if (event.pointerCount != 1 || event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER) return null
         startEnvironment(owner)
-        if (!environmentState.isGestureAllowed(refreshKeyguard = true)) return null
+        if (!gesturePermission.allowed || !environmentState.isGestureAllowed(refreshKeyguard = true)) return null
 
         val metrics = owner.resources.displayMetrics
         val width = metrics.widthPixels.toFloat()
@@ -235,17 +237,18 @@ internal class LauncherHookInstaller(
     private fun startEnvironment(owner: Context) {
         if (environmentStarted) return
         environmentStarted = true
-        configuration.listenForSettingsBroadcast(owner)
         val start = {
+            configuration.listenForSettingsBroadcast(owner)
+            gesturePermission.start(owner, mainHandler)
             environmentState.start(owner)
             environmentState.observe {
-                if (!environmentState.isGestureAllowed()) cancelClaim()
+                if (!gesturePermission.allowed || !environmentState.isGestureAllowed()) cancelClaim()
             }
             configuration.observe {
-                mainHandler.post { if (!environmentState.isGestureAllowed()) cancelClaim() }
+                mainHandler.post { if (!gesturePermission.allowed || !environmentState.isGestureAllowed()) cancelClaim() }
             }
         }
-        if (Looper.myLooper() == Looper.getMainLooper()) start() else mainHandler.post { start() }
+        mainHandler.post { start() }
     }
 
     private fun cancelClaim() {

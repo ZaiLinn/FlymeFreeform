@@ -61,12 +61,17 @@ internal class SystemUiCornerInputMonitor(
             isAccessible = true
         }
     private val bindings = linkedMapOf<CornerSide, CornerBinding>()
+    private val gesturePermission = GesturePermissionClient {
+        if (!gesturePermissionAllowed()) bindings.values.forEach { it.view.resetTracking() }
+    }
+    private fun gesturePermissionAllowed(): Boolean = gesturePermission.allowed
 
     private var settings = ModuleSettingsSnapshot(enabled = false)
     private var pendingSettings: ModuleSettingsSnapshot? = null
     private var lastPilferFailureAt = -PILFER_FAILURE_LOG_INTERVAL_MS
 
     fun start() {
+        gesturePermission.start(context, mainHandler)
         environmentState.start(context)
         environmentState.observe { applySettings(configuration.snapshot) }
         configuration.observe { snapshot ->
@@ -160,7 +165,7 @@ internal class SystemUiCornerInputMonitor(
     }
 
     private fun canClaim(side: CornerSide): Boolean =
-        settings.enabled &&
+        gesturePermission.allowed && settings.enabled &&
             when (side) {
                 CornerSide.Left -> settings.leftCornerEnabled
                 CornerSide.Right -> settings.rightCornerEnabled
@@ -169,6 +174,7 @@ internal class SystemUiCornerInputMonitor(
 
     private fun pilfer(view: View): Boolean =
         try {
+            if (!gesturePermission.allowed) return false
             val viewRoot = getViewRootImplMethod.invoke(view) ?: return false
             val inputToken =
                 viewRoot.javaClass.getMethod("getInputToken").invoke(viewRoot) as? IBinder

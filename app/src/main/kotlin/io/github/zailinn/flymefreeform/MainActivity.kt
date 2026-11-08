@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
                     onPinnedTargetsChange = repository::setPinnedTargets,
                     onInnerArcTargetsChange = repository::setInnerArcTargets,
                     onMoveTargetToArc = repository::moveTargetToArc,
-                    onBlacklistChange = repository::setBlacklistPackages,
+                    onBlacklistChange = repository::setBlacklistPackage,
                 )
             }
         }

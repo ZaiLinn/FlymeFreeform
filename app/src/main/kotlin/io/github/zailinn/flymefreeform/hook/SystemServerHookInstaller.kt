@@ -12,6 +12,7 @@ internal class SystemServerHookInstaller(
     private val configuration: ProcessConfiguration,
 ) {
     private val bound = AtomicBoolean(false)
+    @Volatile private var coordinator: ColorOsFreeformCoordinator? = null
     private val interAppTracker = io.github.zailinn.flymefreeform.hook.launch.InterAppLaunchTracker()
     private val environment = ModuleEnvironmentState(configuration) { code, exception ->
         module.log(Log.WARN, TAG, code, exception)
@@ -37,6 +38,7 @@ internal class SystemServerHookInstaller(
         ).install(classLoader)
         NotificationEnqueueProbe(module).install(classLoader)
         installForegroundObserver(classLoader)
+        installFocusObserver(classLoader)
         try {
             // 厂商初始化入口只能反射定位；缺失时保留系统启动流程。
             @SuppressLint("PrivateApi")
@@ -58,7 +60,7 @@ internal class SystemServerHookInstaller(
                             logger = { priority, code, throwable ->
                                 module.log(priority, TAG, code, throwable)
                             },
-                        ).start()
+                        ).also { coordinator = it; it.start() }
                     }
                     result
                 }
@@ -103,6 +105,25 @@ internal class SystemServerHookInstaller(
             module.log(Log.WARN, TAG, "SYSTEM_FOREGROUND_OBSERVER_UNAVAILABLE", exception)
         } catch (exception: LinkageError) {
             module.log(Log.WARN, TAG, "SYSTEM_FOREGROUND_OBSERVER_LINKAGE_FAILED", exception)
+        }
+    }
+
+    /** AOSP WMS 焦点变更仍在 WM 锁内，钩子只投递许可重算，不直接广播。 */
+    private fun installFocusObserver(classLoader: ClassLoader) {
+        try {
+            val type = classLoader.loadClass("com.android.server.wm.WindowManagerService")
+            val method = type.getDeclaredMethod("updateFocusedWindowLocked",
+                Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType).apply { isAccessible = true }
+            module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .setId("flymefreeform.system.gesture_focus").intercept { chain ->
+                    val result = chain.proceed()
+                    if (result == true) coordinator?.onWindowFocusChanged()
+                    result
+                }
+        } catch (error: ReflectiveOperationException) {
+            module.log(Log.WARN, TAG, "SYSTEM_GESTURE_FOCUS_OBSERVER_UNAVAILABLE", error)
+        } catch (error: LinkageError) {
+            module.log(Log.WARN, TAG, "SYSTEM_GESTURE_FOCUS_OBSERVER_LINKAGE_FAILED", error)
         }
     }
 

@@ -71,7 +71,7 @@ internal fun FlymeFreeformNavHost(
     onPinnedTargetsChange: (List<PinnedTarget>) -> Unit,
     onInnerArcTargetsChange: (Int, List<PinnedTarget>) -> Unit,
     onMoveTargetToArc: (PinnedTarget, Int) -> Unit,
-    onBlacklistChange: (List<String>) -> Unit,
+    onBlacklistChange: (String, Boolean) -> Unit,
 ) {
     val backStack = rememberNavBackStack<AppRoute>(AppRoute.Settings)
     val popBackStack = remember(backStack) {

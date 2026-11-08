@@ -18,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,7 +56,7 @@ internal fun BlacklistScreen(
     apps: List<SelectableEntry>,
     onBack: () -> Unit,
     onAddApps: () -> Unit,
-    onBlacklistChange: (List<String>) -> Unit,
+    onBlacklistChange: (String, Boolean) -> Unit,
 ) {
     val blacklist = state.settings.blacklistPackages
     val enabled = state.settingsEditable
@@ -104,7 +106,7 @@ internal fun BlacklistScreen(
                                     endActions = {
                                         IconButton(
                                             onClick = {
-                                                if (enabled) onBlacklistChange(blacklist - pkg)
+                                                if (enabled) onBlacklistChange(pkg, false)
                                             },
                                         ) {
                                             Icon(
@@ -132,9 +134,15 @@ internal fun BlacklistPickerScreen(
     state: FrameworkConnectionState,
     apps: List<SelectableEntry>,
     onBack: () -> Unit,
-    onBlacklistChange: (List<String>) -> Unit,
+    onBlacklistChange: (String, Boolean) -> Unit,
 ) {
     val blacklist = state.settings.blacklistPackages
+    val pending = remember { mutableStateMapOf<String, Boolean>() }
+    LaunchedEffect(blacklist, state.issue, state.settingsEditable) {
+        if (state.issue != null || !state.settingsEditable) pending.clear()
+        else pending.entries.removeAll { (pkg, desired) -> (pkg in blacklist) == desired }
+    }
+
     val enabled = state.settingsEditable
     var query by remember { mutableStateOf("") }
     val appEntries = remember(apps) { apps.filter { it.target is PinnedTarget.App } }
@@ -183,7 +191,7 @@ internal fun BlacklistPickerScreen(
                             )
                         } else {
                             candidates.forEach { entry ->
-                                val added = entry.packageName in blacklist
+                                val added = pending[entry.packageName] ?: (entry.packageName in blacklist)
                                 BasicComponent(
                                     title = entry.label,
                                     summary = entry.packageName,
@@ -199,13 +207,8 @@ internal fun BlacklistPickerScreen(
                                     },
                                     onClick = {
                                         if (!enabled) return@BasicComponent
-                                        onBlacklistChange(
-                                            if (added) {
-                                                blacklist - entry.packageName
-                                            } else {
-                                                blacklist + entry.packageName
-                                            },
-                                        )
+                                        pending[entry.packageName] = !added
+                                        onBlacklistChange(entry.packageName, !added)
                                     },
                                 )
                             }
