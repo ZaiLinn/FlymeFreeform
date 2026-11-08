@@ -165,8 +165,11 @@ internal fun PinnedAppsScreen(
     var pickerQuery by remember { mutableStateOf("") }
     // 拖动或增删后的本地顺序（按圈）；远端配置回读同步前以它为准，避免列表闪回旧顺序
     val localOrders = remember { mutableStateMapOf<Int, List<PinnedTarget>>() }
-    LaunchedEffect(state.canChangeSettings, state.issue) {
-        if (!state.canChangeSettings || state.issue != null) localOrders.clear()
+    // 只在连接断开、作用域缺失或写入出错时丢弃本地顺序。不能看 canChangeSettings：
+    // 每次写入都会短暂置起 isUpdating，若此时清空，勾选会先跳回旧配置再随回读恢复（图标与文字闪动），
+    // 连续快速点击时后一次点击还会基于旧列表提交，把前一次的增删冲掉。
+    LaunchedEffect(state.settingsEditable, state.issue) {
+        if (!state.settingsEditable || state.issue != null) localOrders.clear()
     }
     LaunchedEffect(arcTargets) {
         localOrders.keys.filter { arc -> localOrders[arc] == arcTargets.getOrNull(arc) }.forEach(localOrders::remove)
