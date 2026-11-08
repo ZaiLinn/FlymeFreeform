@@ -591,6 +591,7 @@ internal class OutsideTapCloseHookInstaller(
 
         /** 关闭指定应用最上层的普通小窗；最上层小窗不属于该应用或不是普通小窗时不动并返回 false。 */
         fun closeTopZoomTaskOf(packageName: String): Boolean {
+            io.github.zailinn.flymefreeform.hook.launch.StarterLockProbe.current?.assertOffStarter("close_top_zoom_task")
             val controller = lastController ?: return false
             val task = getTopZoomTask.invokeUnwrapped(controller) ?: return false
             val taskPackage =

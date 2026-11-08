@@ -8,7 +8,6 @@ import io.github.libxposed.api.XposedInterface
 import io.github.zailinn.flymefreeform.hook.ModuleEnvironmentState
 import io.github.libxposed.api.XposedModule
 import io.github.zailinn.flymefreeform.hook.ProcessConfiguration
-import io.github.zailinn.flymefreeform.hook.ZoomTaskCloser
 import io.github.zailinn.flymefreeform.log.ModuleLog
 import io.github.zailinn.flymefreeform.log.VerboseLog
 
@@ -35,11 +34,14 @@ internal class ActivityStarterZoomInjector(
     /** 最近一次被抢占的应用间链接，用于吞掉发起方紧接着重发的同一链接。 */
     @Volatile private var lastLinkKey: String? = null
     @Volatile private var lastLinkAt = 0L
-    private var cachedSystemUiUid: Int? = null
-    private var cachedLauncherUid: Int? = null
-    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val lockProbe = StarterLockProbe(SystemClock::uptimeMillis) { module.log(Log.WARN, TAG, it) }
+    private val effects = StarterSideEffects(lockProbe) { code, error -> module.log(Log.WARN, TAG, code, error) }
+    private val queries = StarterQueryCache(effects)
+
 
     fun install(classLoader: ClassLoader) {
+        StarterLockProbe.current = lockProbe
+        queries.warmUp()
         val starter =
             try {
                 classLoader.loadClass(ACTIVITY_STARTER_CLASS)
@@ -65,6 +67,8 @@ internal class ActivityStarterZoomInjector(
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .setId("flymefreeform.zoom.starter." + method.name + "." + method.parameterCount)
                 .intercept { chain ->
+                    lockProbe.attach(chain.thisObject)
+                    queries.warmUp()
                     runCatching { trace(chain.thisObject, method.name) }
                     val preempted =
                         runCatching { preemptWithZoomWindow(chain.thisObject, method.name) }
@@ -154,7 +158,7 @@ internal class ActivityStarterZoomInjector(
             when {
                 // 锁屏与息屏状态下不接管任何启动：此时系统正在显示锁屏界面或恢复桌面，
                 // 抢占会使窗口创建在锁屏之下，解锁前不可见，表现为点击无响应。
-                environment?.isDeviceUnlocked(refreshKeyguard = true) == false -> false
+                environment?.isDeviceUnlocked(refreshKeyguard = false) == false -> false
                 selfRelaunch -> true
                 // 从 Activity 以 startActivity 打开别的应用的链接（Telegram 点链接 → X / 浏览器）：
                 // 只往 options 注入小窗参数会被柔性任务控制器拒绝（reason:8/9），实测退化为全屏。
@@ -184,7 +188,7 @@ internal class ActivityStarterZoomInjector(
                 "_cp" + callingPackage +
                 "_tg" + target }
         if (!eligible) return false
-        // 先收横幅再启动。collapsePanels 只对通知面板有效，ColorOS 大横幅要交给
+        // 先收横幅再启动。系统收面板接口只对通知面板有效，ColorOS 大横幅要交给
         // SystemUI 侧的 BannerCollapseBridge 触发它自己的收起动画。
         collapseShadeImmediately()
         requestBannerCollapse()
@@ -209,7 +213,7 @@ internal class ActivityStarterZoomInjector(
     /**
      * 目标已在小窗时打开新链接：吞掉本次启动，投递到主线程先关旧小窗，稍后以 zoom 入口重开。
      *
-     * 关小窗（exitFlexibleTask）与重开都不能在 starter 钩子里同步做：此处持有 WindowManagerGlobalLock，
+     * 关小窗与重开都不能在 starter 钩子里同步做：此处持有 WindowManagerGlobalLock，
      * 同步执行有锁序风险（参见 1.4.0 死锁）。拿不到关窗入口时放行普通启动，链接仍能送到，只是可能退成全屏。
      */
     private fun reopenInZoom(
@@ -219,35 +223,21 @@ internal class ActivityStarterZoomInjector(
         linkKey: String?,
         stage: String,
     ): Boolean {
-        if (environment?.isDeviceUnlocked(refreshKeyguard = true) == false) return false
-        val closer = ZoomTaskCloser.closer
-        if (closer == null) {
+        if (environment?.isDeviceUnlocked(refreshKeyguard = false) == false) return false
+        if (!effects.canCloseZoomTask()) {
             markZoomed(target, selfRelaunch = false)
             ModuleLog.debug(TAG) { "ZOOM_REOPEN_UNAVAILABLE_" + stage + "_" + target }
             return false
         }
-        val copy = Intent(intent)
         lastLinkKey = linkKey
         lastLinkAt = SystemClock.uptimeMillis()
         interAppTracker?.record(callingPackage, target)
         ModuleLog.debug(TAG) { "ZOOM_REOPEN_SCHEDULED_" + stage + "_" + target }
-        handler.post {
-            val closed = runCatching { closer(target) }.getOrDefault(false)
-            handler.postDelayed(
-                {
-                    preempting.set(true)
-                    try {
-                        val started = startZoomWindow(copy, target)
-                        if (started) markZoomed(target, selfRelaunch = false)
-                        ModuleLog.debug(TAG) {
-                            "ZOOM_REOPENED_closed" + closed + "_started" + started + "_" + target
-                        }
-                    } finally {
-                        preempting.set(false)
-                    }
-                },
-                if (closed) REOPEN_DELAY_MS else 0L,
-            )
+        effects.reopenInZoom(Intent(intent), target, REOPEN_DELAY_MS) { copy ->
+            preempting.set(true)
+            try {
+                startZoomWindow(copy, target).also { if (it) markZoomed(target, selfRelaunch = false) }
+            } finally { preempting.set(false) }
         }
         return true
     }
@@ -344,6 +334,10 @@ internal class ActivityStarterZoomInjector(
         ModuleLog.debug(TAG) { "ZOOM_TRACE " + parts.joinToString(" ") }
     }
 
+    /**
+     * 可在 WM 锁内调用：ColorOS zoom 入口重入 ATMS 同一把锁；按既有设备验证保留白名单。
+     * 依据：计划 A2 与 CONSTRAINTS 的 1.4.0 trace，广播是该次锁序反转的来源。
+     */
     private fun startZoomWindow(intent: Intent, targetPackage: String): Boolean =
         runCatching {
             val managerClass = Class.forName(ZOOM_MANAGER_CLASS)
@@ -448,18 +442,10 @@ internal class ActivityStarterZoomInjector(
         }
     }
 
-    /** 隐式意图的目标包名；解析失败返回 null。 */
-    private fun resolveImplicitTarget(intent: Intent): String? =
-        runCatching {
-            systemContext()?.packageManager?.resolveActivity(intent, 0)?.activityInfo?.packageName
-        }.getOrNull()
+    /** PM 可进入 AMS（AOSP Android 15 ComputerEngine.isRecentsAccessingChildProfiles）；只读异步缓存。 */
+    private fun resolveImplicitTarget(intent: Intent): String? = queries.resolve(intent)
 
-    /** 是否为非系统应用；无法判定时按系统应用处理，保持全屏。 */
-    private fun isThirdPartyApplication(packageName: String): Boolean =
-        runCatching {
-            val info = systemContext()?.packageManager?.getApplicationInfo(packageName, 0)
-            info != null && (info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) == 0
-        }.getOrDefault(false)
+    private fun isThirdPartyApplication(packageName: String): Boolean = queries.isThirdParty(packageName)
 
     /**
      * 是否为分享面板。
@@ -704,81 +690,17 @@ internal class ActivityStarterZoomInjector(
         return null
     }
 
-    /** 请求 SystemUI 收起 ColorOS 大横幅（它不受 collapsePanels 控制）。 */
-    /**
-     * 请求 SystemUI 收起大横幅。
-     *
-     * 必须投递到主线程异步发送：调用方是 ActivityStarter 钩子，此时持有 WindowManagerGlobalLock，
-     * 同步 sendBroadcast 要拿 AMS 锁；若另一线程正持 AMS 锁等 WM 锁（如被启动的应用正在 attachApplication），
-     * 两边互等，system_server 死锁、看门狗重启（1.4.0 实测）。
-     */
-    private fun requestBannerCollapse() {
-        handler.post {
-            runCatching {
-                systemContext()?.sendBroadcast(
-                    Intent(ACTION_COLLAPSE_BANNER).setPackage(SYSTEM_UI_PACKAGE),
-                )
-                ModuleLog.debug(TAG) { "ZOOM_BANNER_COLLAPSE_REQUESTED" }
-            }.onFailure { module.log(Log.WARN, TAG, "ZOOM_BANNER_COLLAPSE_FAILED", it) }
-        }
-    }
+    private fun requestBannerCollapse() = effects.requestBannerCollapse()
 
-    /** 同步收起通知面板/横幅：不排延迟，调用即发出收起请求。 */
-    private fun collapseShadeImmediately() {
-        runCatching {
-            val statusBar = systemContext()?.getSystemService("statusbar")
-            if (statusBar != null) {
-                statusBar.javaClass.getMethod("collapsePanels").invoke(statusBar)
-                ModuleLog.debug(TAG) { "ZOOM_SHADE_IMMEDIATE" }
-            }
-        }.onFailure { module.log(Log.WARN, TAG, "ZOOM_SHADE_IMMEDIATE_FAILED", it) }
-    }
+    /** 收面板经过权限与系统服务检查，无法保证厂商路径的锁序；改为主线程队首执行。 */
+    private fun collapseShadeImmediately() = effects.collapseShadeImmediately()
 
-    /**
-     * 延迟收起通知面板：注入完成后面板仍在，需等新窗口提交再收，过早会被启动流程重新展开。
-     */
-    private fun collapseShade() {
-        handler.postDelayed(
-            {
-                runCatching {
-                    val statusBar = systemContext()?.getSystemService("statusbar")
-                    if (statusBar != null) {
-                        statusBar.javaClass.getMethod("collapsePanels").invoke(statusBar)
-                        ModuleLog.debug(TAG) { "ZOOM_SHADE_COLLAPSED" }
-                    } else {
-                        ModuleLog.debug(TAG) { "ZOOM_SHADE_UNAVAILABLE" }
-                    }
-                }.onFailure { module.log(Log.WARN, TAG, "ZOOM_SHADE_COLLAPSE_FAILED", it) }
-                Unit
-            },
-            SHADE_COLLAPSE_DELAY_MS,
-        )
-    }
+    private fun collapseShade() = effects.collapseShade(SHADE_COLLAPSE_DELAY_MS)
 
-    private fun systemContext(): android.content.Context? =
-        runCatching {
-            val activityThread = Class.forName("android.app.ActivityThread")
-            val current = activityThread.getMethod("currentActivityThread").invoke(null)
-            activityThread.getMethod("getSystemContext").invoke(current) as android.content.Context
-        }.getOrNull()
+    /** 厂商来源查询缺少完整锁序证据，只读异步缓存。 */
+    private fun fromControlCenter(packageName: String): Boolean = queries.fromControlCenter(packageName)
 
-    /** 查询系统记录的「来自控制中心」包名。 */
-    private fun fromControlCenter(packageName: String): Boolean =
-        runCatching {
-            val cls = Class.forName(OPLUS_LIST_MANAGER)
-            val instance = cls.getMethod("getInstance").invoke(null)
-            val method = cls.getMethod("isFromControlCenterPkg", String::class.java)
-            method.invoke(instance, packageName) as? Boolean ?: false
-        }.getOrDefault(false)
-
-    private fun systemUiUid(): Int {
-        cachedSystemUiUid?.let { return it }
-        val uid = runCatching {
-            systemContext()?.packageManager?.getApplicationInfo(SYSTEM_UI_PACKAGE, 0)?.uid ?: 0
-        }.getOrDefault(0)
-        cachedSystemUiUid = uid
-        return uid
-    }
+    private fun systemUiUid(): Int = queries.uid(SYSTEM_UI_PACKAGE)
 
     /**
      * 经系统分发服务转交的启动，返回其真实发起者；不属于该情形时返回 null。
@@ -791,22 +713,9 @@ internal class ActivityStarterZoomInjector(
         return owner.takeIf { isThirdPartyApplication(it) }
     }
 
-    /** 由 uid 反查所属包名；一个 uid 对应多个包时取第一个。 */
-    private fun owningPackageOf(uid: Int): String? =
-        runCatching {
-            if (uid <= 0) null
-            else systemContext()?.packageManager?.getPackagesForUid(uid)?.firstOrNull()
-        }.getOrNull()
+    private fun owningPackageOf(uid: Int): String? = queries.owner(uid)
 
-    /** 桌面 uid：用于识别经 LauncherApps 代发的桌面快捷方式。 */
-    private fun launcherUid(): Int {
-        cachedLauncherUid?.let { return it }
-        val uid = runCatching {
-            systemContext()?.packageManager?.getApplicationInfo(LAUNCHER_PACKAGE, 0)?.uid ?: 0
-        }.getOrDefault(0)
-        cachedLauncherUid = uid
-        return uid
-    }
+    private fun launcherUid(): Int = queries.uid(LAUNCHER_PACKAGE)
 
     private fun optionsBundle(starter: Any, request: Any?): Bundle? {
         val options =

@@ -133,7 +133,7 @@ internal class NotificationZoomSourceHook(
                 io.github.zailinn.flymefreeform.log.ModuleLog.debug(TAG) { "ZOOM_FLOAT_CLICK_expanded_" + expanded }
                 if (expanded) {
                     runCatching { collapseShade(starter) }
-                    mainHandler.postDelayed(
+                    mainHandler.postDelayed( // starter-safety: allow 仅在 SystemUI 通知点击回调中执行，不属于 system_server starter 路径
                         {
                             val handled =
                                 runCatching { startFloatWindow(starter, row) }
@@ -188,7 +188,7 @@ internal class NotificationZoomSourceHook(
         return runCatching {
             val statusBar = context.getSystemService("statusbar")
             if (statusBar != null) {
-                statusBar.javaClass.getMethod("collapsePanels").invoke(statusBar)
+                statusBar.javaClass.getMethod("collapsePanels").invoke(statusBar) // starter-safety: allow 仅在 SystemUI 进程收面板，不持 system_server WM 锁
                 true
             } else {
                 false
@@ -213,7 +213,7 @@ internal class NotificationZoomSourceHook(
         return settings.enabled && settings.zoomLaunch
     }
 
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper()) // starter-safety: allow 仅供 SystemUI 通知点击回调投递
 
     private companion object {
         const val TAG = "FlymeFreeform"
