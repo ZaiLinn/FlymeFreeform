@@ -132,6 +132,7 @@ config/ apps/ framework/ log/
 **窗外关闭 / 快速上滑 / 数量上限**　分别钩 `FlexibleTaskController.exitFlexibleTask`、
 普通小窗底部横条上滑入口、`FlexibleWindowManagerService.getMaxWinNum`；应用准入钩三类共 9 个
 `isSupportFlexibleWindow`（FlexibleWindowManagerService 2、FlexibleTaskController 3、FlexibleWindowUtils 3）。
+数量上限取 0 =「跟随系统」时 `getMaxWinNum` 直接 `proceed`，不覆盖。实测装了 LuckyTool（多浮窗上限 200）时生效的是 LuckyTool 的值，即使本模块设为 5 也压不住，原因未核实（可能走的不是同一条判定路径，或钩子顺序在外层）。
 
 **超限关窗（不贴边）—— 已移除，不要再加回来**
 
@@ -194,7 +195,7 @@ config/ apps/ framework/ log/
 
 - 扇形命中半径 40–140 dp，默认 100 dp；选中放大 1.2×
 - 触发范围 24–160 dp，默认 84 dp
-- 扇形条目数 1–6，小窗数量 1–5（两个上限不同，不可混用）
+- 扇形条目数 1–6，小窗数量 0–5（0 = 跟随系统；两个上限不同，不可混用）
 - 多圆弧 1–4 条：默认圆弧放「数量上限」内条目 +「更多」，内侧圆弧容量 5/4/3（`RadialArcPlan`）；默认圆弧固定项仍存 `corner_targets_v2`（上限 6），第 2～4 圈各存 `corner_targets_arc{2,3,4}_v1`（上限 5/4/3，空即按补位方式填充），减少圆弧条数不清除；启动前核对用 `allPinnedTargets`；广播 `EXTRA_INNER_ARC_TARGETS` 携带内圈固定项
 - 圈距 `min(1.3 × 图标, (外半径 − 2.27 × 图标)/(条数 − 1))`，不小于图标直径；角落空白区 = 最内一圈半径 − 圈距
 - 补位方式 `radial_fill_source`：0 最近使用（默认）/ 1 最常使用 / 2 不补位
@@ -303,22 +304,21 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-08 10:05（Asia/Shanghai）
+更新时间：2026-11-08 11:30（Asia/Shanghai）
 
 | 项 | 值 |
 |---|---|
-| 版本 | 1.3.6 / 2026110717 |
-| 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main` = `c156254`（基于 `87c0aaa` 的 7 个提交：`8d9f06d` 包名、`f700547` 测试期望、`277f1ed` 面板标题与搜索返回、`16a5753` 配置模型、`eb6aeb4` 扇形浮层与目录、`1d53dfc` 模块界面、`c156254` 文档）；`upstream` = Hoerire |
-| 已发布 | Release [v1.3.6](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.6)（tag 指向 `c156254`），资产 `FlymeFreeform-v1.3.6.apk` 与 `out/` 产物同一 sha256（GitHub 资产摘要已核对） |
-| 最新构建 | `out/FlymeFreeform-v1.3.6.apk`，sha256 `bdff3a8496c5ac89735fe927b8dd16887fe2a95723240f99f03765f7c5d3ba44`，2117935 B，用户密钥签名（证书 SHA-256 `14f19d42…4b52`），包名 `io.github.zailinn.flymefreeform`；含包 A–E 全部改动（用户要求直接出最新包，未按一包一改拆分）；**未安装** |
-| 设备已装 | `beec312c…86d7`（调试签名 `CN=Android Debug`，v1/v2/v3 均通过、`-P 16` 对齐通过），system_server 已重启，运行中 |
-| 设备包包含 | 多圆弧（1–4 条）与按圈自定义内圈、「更多」分组标题与搜索返回修复、扇形目录两步发布与缓存、两圈时第二圈命中范围加宽 |
-| 已改未打包（按包拆分计划） | 包 A：「更多」面板图标按需加载（`PanelIconLoader`）+ 目录日志改走 `ModuleLog.debug`（`ICON_MISSING` 不再常开）+ 开机首次先发布常用/最近一批　包 B：扇形应用页左右滑动切圈、增删展开/收起动画、跨圈移动固定项（只需重开模块应用）　包 C：补位方式（最近使用/最常使用/不补位）+「更多」顶部随补位依据 + 补位跳过前台应用　包 D：跨圈换格震动　包 E：命中范围预览按各圈实际条数（模块应用）。另有包名改为 `io.github.zailinn.flymefreeform`（随第一次换签名一起装） |
-| 单元测试 | 161 项全部通过（3 项 skip） |
-| 工具 | `local-release.sh`、`restart-gate.sh` 已补（均列入 `.gitignore`，与本文件一样不随仓库分发） |
-| 包名 | 源码已改为 `io.github.zailinn.flymefreeform`（目录、namespace、applicationId、`java_init.list`、广播 action、权限名）；设备上仍是旧包名 `io.github.hoerire.flymefreeform` 的 `beec312c`。新包名是另一个应用：装之前先在 LSPosed 停用并卸载旧模块，再给新模块重新勾选作用域（system_server、SystemUI、桌面、智能侧边栏）并重启 |
-| 关于页 | 只保留一个「项目地址」→ `ZaiLinn/FlymeFreeform`；上游地址与致谢移到 README |
-| 签名 | 用户已生成自己的 `release.keystore`（`CN=ZaiLinn`）；`local-release.sh` 已改为从环境变量 / 钥匙串 / 交互读口令。设备上仍是调试签名包，换用户密钥签的包需先卸载一次 |
+| 版本 | 1.3.7 / 2026110811 |
+| 工作副本 | `~/Documents/Code/FlymeFreeform`，main = `origin/main`。v1.3.6（`c156254`）之后：用户在网页上改的 `e2af931` README 上游链接，`a84c926` 侧边栏工具图标兜底并排除、`56c2571` 小窗数量跟随系统、`6c7ddf0` 拖动排序触感与防闪动、`6a10515` 固定项按列表顺序、`c17626f` 图标形状，最后一个提交为版本号与文档（v1.3.7 tag 所指）。各中间提交均单独编译通过；`upstream` = Hoerire |
+| 已发布 | Release [v1.3.7](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.7)，资产 `FlymeFreeform-v1.3.7.apk`，sha256 `a83442446ac16d0f2e7b2cdc51c25cc773263345f62b18a408b9f20ceca161d3`，2138415 B，用户密钥签名；上一版 v1.3.6 资产 `bdff3a84…ba44` |
+| 设备已装 | `e38172b3`（1.3.6 版本号，含侧边栏兜底、排除注入工具、跟随系统、拖动排序；不含图标形状与固定项顺序）。10:21:57 重启过 system_server；之后用户可能已自行安装 `1dd39f08`（1.3.6 版本号，内容同 v1.3.7），未经本机核对 |
+| 设备另有 | 旧包 `io.github.hoerire.flymefreeform` 仍在，应在 LSPosed 停用并卸载 |
+| 未在设备验证 | 「Run in background」已从挑选列表排除；跟随系统时 LuckyTool 的 200 生效、选 2 时以 2 为准；拖动触感与无闪动；图标形状第二版（方形保持系统原样、工具按应用图标模板裁切；圆形统一 86% 后裁圆）；固定项按列表顺序 |
+| 待查 | 用户反映装 `e38172b3` 后增减应用扇形不更新。之后 system_server 无 `MODULE_STATE_CHANGED`，但固定项走广播 `override` 路径本就不打这条日志，10:36 前后的目录刷新可能就是广播触发，原因未定 |
+| 单元测试 | 170 项全部通过（3 项 skip） |
+| 工具 | `local-release.sh`、`restart-gate.sh`（均列入 `.gitignore`，不随仓库分发） |
+| 关于页 | 只保留一个「项目地址」→ `ZaiLinn/FlymeFreeform`；上游地址与致谢在 README |
+| 签名 | 用户密钥 `release.keystore`（`CN=ZaiLinn`）；口令从环境变量 / 钥匙串 / 交互读取 |
 
 ### 实测（`dc0bcfef` 版，即目录两步发布首版，重启后）
 
@@ -327,11 +327,10 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ### 下一步（按序）
 
-0. 改包名与换签名合在一次切换里做：LSPosed 停用并卸载旧模块 → 装用户密钥签的新包名包 → 勾选作用域 → 重启；模块设置需重新配置
-1. 包 A–E 分开构建验证（改动在同一工作区，需先分开提交或按文件分批构建）：
-   A 看 `SYSTEM_CATALOG_PANEL_ORDER` 耗时与重启后立刻点「更多」；B 看滑动切圈、增删动画、跨圈移动；
-   C 看三种补位方式与前台应用不进补位；D 看跨圈震动；E 拖命中范围滑条看预览
-2. 待评估：滑选时显示应用名
+0. 装 v1.3.7 并重启 system_server，逐项验证上表「未在设备验证」各项，同时看增减应用后扇形是否更新
+1. 卸载旧包 `io.github.hoerire.flymefreeform`
+2. 新包上逐项实测多圆弧、补位方式、跨圈移动、震动、预览、「更多」面板首开耗时（`SYSTEM_CATALOG_PANEL_ORDER`；图标形状让面板图标多一步处理）
+3. 待评估：滑选时显示应用名
 
 ### 本轮的坑
 
@@ -339,3 +338,8 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 - 角落空白区若以「最内一圈图标内沿」为界，两圈时第二圈只剩约 50 基准 dp 宽
 - `ConcurrentHashMap` 上用 Kotlin `in` 会调用 `contains` = `containsValue`，必须写 `containsKey`
 - 一次打包混入多个改动（首个 release 包含多圆弧、面板标题、搜索返回三项），出问题无法定位；之后一包一改
+- 只要覆盖安装了模块包，就按改动最大的进程重启；装包后不重启 system_server 时，曾出现增减应用扇形不更新（原因未定）
+- ColorOS 的 `buildAdaptiveIconDrawable` 不理会外形路径，应用图标形状只能在模块里自己裁；系统图标带透明留白，裁切前先裁到本体
+- Compose 里「换位后先回到旧位置再动画」的补偿必须同帧生效（`SideEffect` 写状态、绘制阶段读），放进 `LaunchedEffect` 会闪一帧
+- 装了 LuckyTool 时多浮窗上限以 LuckyTool 为准，本模块的「小窗数量」实测压不住它
+- 侧边栏工具的图标资源可能不属于侧边栏自身；目录读取里任何单项失败都必须就地兜底，不能让整个目录作废
