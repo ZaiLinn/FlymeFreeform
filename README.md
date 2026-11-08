@@ -16,7 +16,8 @@
 模块以 Xposed 模块形式运行，不安装常驻服务，不接管窗口管理，只补齐入口与开关。多任务、分屏、窗口堆叠等行为保持系统原生。
 
 - 项目地址：[ZaiLinn/FlymeFreeform](https://github.com/ZaiLinn/FlymeFreeform)
-- 上游：[Hoerire/FlymeFreeform](https://github.com/Hoerire/FlymeFreeform)（本项目由此 fork）← [Mangi-11/FlymeFreeform](https://github.com/Mangi-11/FlymeFreeform)（原始项目）
+- 上游：[Hoerire/FlymeFreeform](https://github.com/Hoerire/FlymeFreeform)
+- 上游：[Mangi-11/FlymeFreeform](https://github.com/Mangi-11/FlymeFreeform)（原始项目）
 
 ## 预览
 
