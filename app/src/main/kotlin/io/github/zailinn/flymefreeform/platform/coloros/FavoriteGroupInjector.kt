@@ -46,6 +46,35 @@ internal object FavoriteGroupInjector {
 
     private val cache = java.util.WeakHashMap<List<*>, List<*>>()
 
+    /** 分组角色：标题行的文案由它决定，而不是由标题在列表里的先后决定。 */
+    enum class GroupRole { Pinned, Recent }
+
+    /**
+     * 模块产出的分组标题 → 角色，按对象身份匹配。
+     *
+     * 标题行的 viewType 决定了它绑定哪段固定文案（实测两段都显示「工具 / Tools」），
+     * 改 TitleLabelData 的字段不会反映到界面；界面侧按这里登记的角色在绑定后改写 TextView。
+     * 只保留最近几次产出的标题，弱引用不阻止回收。
+     */
+    private val titleRoles = ArrayDeque<Pair<java.lang.ref.WeakReference<Any>, GroupRole>>()
+
+    private fun rememberTitle(title: Any?, role: GroupRole) {
+        if (title == null) return
+        synchronized(titleRoles) {
+            titleRoles.removeAll { it.first.get().let { known -> known == null || known === title } }
+            titleRoles.addLast(java.lang.ref.WeakReference(title) to role)
+            while (titleRoles.size > MAX_REMEMBERED_TITLES) titleRoles.removeFirst()
+        }
+    }
+
+    /** 该行若是模块产出的分组标题，返回其角色；系统原厂标题（工具 / 应用）返回 null。 */
+    fun titleRole(row: Any?): GroupRole? {
+        if (row == null) return null
+        return synchronized(titleRoles) { titleRoles.firstOrNull { it.first.get() === row }?.second }
+    }
+
+    private const val MAX_REMEMBERED_TITLES = 16
+
     /** 每个 adapter 第一次注入前的原始列表；后续注入都以它为基准。 */
     private val originals = java.util.WeakHashMap<Any, List<*>>()
 
@@ -202,26 +231,6 @@ internal object FavoriteGroupInjector {
     }
 
     /**
-     * 廉价校验：只有列表真的被系统换掉（长度或首元素变了）才重新重排。
-     * 后续几个时间点用这个，避免每次都去查 UsageStats、重排 79 条，导致面板发卡。
-     */
-    fun applyIfStale(adapter: Any, context: android.content.Context? = null) {
-        try {
-            val field = adapter.javaClass.getDeclaredField("mData").apply { isAccessible = true }
-            @Suppress("UNCHECKED_CAST")
-            val current = field.get(adapter) as? List<*> ?: return
-            val good = lastGood
-            if (good != null && current.size == good.size && current.firstOrNull() === good.firstOrNull()) {
-                d { "stale check: 未变化（size=" + current.size + "），跳过重排" }
-                return
-            }
-            apply(adapter, context)
-        } catch (t: Throwable) {
-            d(t) { "stale check fail" }
-        }
-    }
-
-    /**
      * 纯数据构造：只看用户设置 XML + 最近使用，不依赖当前列表内容。
      * 在后台线程调用，主线程只负责把结果原地写进 adapter 的列表。
      */
@@ -236,8 +245,10 @@ internal object FavoriteGroupInjector {
         }
         val pickedAliases = picked.mapNotNull { aliasOf(it) }.toHashSet()
         val recent = recentItems(loader, context).filter { aliasOf(it)?.let { a -> a !in pickedAliases } ?: true }
-        val head = makeTitle(loader, null, "收藏")
-        val recentTitle = if (recent.isNotEmpty()) makeTitle(loader, null, "最近") else null
+        val head = makeTitle(loader, null, PanelGroupLabels.pinned())
+        val recentTitle = if (recent.isNotEmpty()) makeTitle(loader, null, PanelGroupLabels.recent()) else null
+        rememberTitle(head, GroupRole.Pinned)
+        rememberTitle(recentTitle, GroupRole.Recent)
         val out = ArrayList<Any?>(picked.size + recent.size + 2)
         head?.let { out.add(it) }
         out.addAll(picked)
@@ -260,8 +271,14 @@ internal object FavoriteGroupInjector {
             // mPanelData 里没有标题行（实测 titles=0，只有工具区条目和占位项），
             // 只有它确实带分组标题时才整份采用。
             if (cleaned.size > 1 && titles.size >= 2) {
-                titles.getOrNull(0)?.let { setTitle(it, "收藏") }
-                titles.getOrNull(1)?.let { setTitle(it, "最近") }
+                titles.getOrNull(0)?.let {
+                    setTitle(it, PanelGroupLabels.pinned())
+                    rememberTitle(it, GroupRole.Pinned)
+                }
+                titles.getOrNull(1)?.let {
+                    setTitle(it, PanelGroupLabels.recent())
+                    rememberTitle(it, GroupRole.Recent)
+                }
                 return cleaned
             }
         }
@@ -361,12 +378,21 @@ internal object FavoriteGroupInjector {
                 " second=" + (second != null) }
             d { "recentAliases=" + recentItems.mapNotNull { aliasOf(it) } }
             val out = ArrayList<Any?>(picked.size + recentItems.size + 2)
-            head?.let { out.add(it) }
+            head?.let {
+                setTitle(it, PanelGroupLabels.pinned())
+                rememberTitle(it, GroupRole.Pinned)
+                out.add(it)
+            }
             out.addAll(picked)
             if (recentItems.isNotEmpty()) {
                 // 用和「收藏」完全相同的 viewType 新建标题，保证这个头一定按标题布局渲染。
-                val recentTitle = makeTitle(loader, head, "最近") ?: second
-                recentTitle?.let { out.add(it) }
+                val recentTitle = makeTitle(loader, head, PanelGroupLabels.recent()) ?: second
+                recentTitle?.let {
+                    // 角色按出处登记：即便收藏段因为空被剔除，最近段标题也不会被当成收藏。
+                    setTitle(it, PanelGroupLabels.recent())
+                    rememberTitle(it, GroupRole.Recent)
+                    out.add(it)
+                }
                 out.addAll(recentItems)
             }
             // 标题后面没有条目会多出一个可展开箭头，空分组直接去掉。
@@ -379,10 +405,6 @@ internal object FavoriteGroupInjector {
                 }
                 cleaned.add(item)
             }
-            // 分组标题：收藏段与最近段。
-            val titles = cleaned.filter { it?.javaClass?.simpleName == "TitleLabelData" }
-            titles.getOrNull(0)?.let { setTitle(it, "收藏") }
-            titles.getOrNull(1)?.let { setTitle(it, "最近") }
             return cleaned
         } catch (t: Throwable) {
             d(t) { "reorder fail" }

@@ -102,6 +102,7 @@ internal class SidebarHookInstaller(private val module: XposedModule, private va
                     original
                 }
             log(Log.INFO, "ALL_APPS_BRIDGE_INSTALLED", null)
+            installPanelDataHooks(loader, handles)
             // 工具（付款码、扫一扫这类）的启动经系统 uid 代发，侧边栏进程只负责递参数，
             // 小窗参数必须在这一步并入，理由见 PanelToolLaunchBridge 的说明。
             // 厂商版本缺少该入口时只跳过本功能，面板接管不受影响。
@@ -135,6 +136,63 @@ internal class SidebarHookInstaller(private val module: XposedModule, private va
             handles.forEach { it.unhook() }
             log(Log.WARN, "ALL_APPS_LINKAGE_FAILED", error)
         }
+    }
+
+    /**
+     * 「更多」面板数据的源头接管（侧边栏 16.11.3 字节码核对）。
+     *
+     * 原厂列表：AllAppRecyclerAdapter.mData 就是 SearchHelper.currentDataList 同一个对象，
+     * 所有重灌都是 `currentDataList.clear(); addAll(工具折叠/展开/不折叠列表)`，出现在
+     * buildAllList（加载完成）、fuzzyMatch（输入变化；空串即退出搜索）、buildCollapseList /
+     * buildExpandList（工具折叠切换）与 onDynamicIconChanged。在这些方法返回后把列表换成
+     * 「收藏 + 最近」，系统任何时机放回原厂列表都会被立即接管，不再靠定时器与观察者追赶。
+     *
+     * 分组标题行是 LabelViewHolder，文案来自 viewType 对应布局里的固定字符串，
+     * onBindViewHolder 对它什么都不做；在绑定返回后按数据行角色改写文案。
+     *
+     * 每个入口单独安装，缺失时只记日志跳过，不影响面板接管的其余部分。
+     */
+    private fun installPanelDataHooks(loader: ClassLoader, handles: MutableList<XposedInterface.HookHandle>) {
+        val searchClass = runCatching { loader.loadClass(ColorOsAllAppsContent.SEARCH_CLASS) }.getOrNull()
+        // 参数按个数匹配：buildAllList 的 kotlin.Pair 属于侧边栏自己的 Kotlin 运行时，与模块的不是同一个类。
+        val refills =
+            listOf(
+                "fuzzyMatch" to 1,
+                "buildAllList" to 1,
+                "buildCollapseList" to 0,
+                "buildExpandList" to 0,
+                "onDynamicIconChanged" to 0,
+            )
+        var installed = 0
+        for ((name, parameterCount) in refills) {
+            runCatching {
+                val method = checkNotNull(searchClass).declaredMethods.single {
+                    it.name == name && it.parameterCount == parameterCount
+                }
+                handles += module.hook(method).setId("flymefreeform.allapps.refill." + name)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                        val original = chain.proceed()
+                        endpoint?.onNativeListWritten(chain.thisObject)
+                        original
+                    }
+                installed++
+            }.onFailure { log(Log.WARN, "PANEL_REFILL_HOOK_UNAVAILABLE_" + name, it) }
+        }
+        runCatching {
+            val adapterClass = loader.loadClass(ColorOsAllAppsContent.ADAPTER_CLASS)
+            val bind = adapterClass.declaredMethods.single { method ->
+                method.name == "onBindViewHolder" && method.parameterCount == 2 &&
+                    method.parameterTypes[1] == Int::class.javaPrimitiveType
+            }
+            handles += module.hook(bind).setId("flymefreeform.allapps.title_bind")
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                    val original = chain.proceed()
+                    endpoint?.onRowBound(chain.thisObject, chain.getArg(0), chain.getArg(1) as Int)
+                    original
+                }
+            installed++
+        }.onFailure { log(Log.WARN, "PANEL_TITLE_BIND_HOOK_UNAVAILABLE", it) }
+        log(Log.INFO, "PANEL_DATA_HOOKS_INSTALLED_" + installed, null)
     }
 
     private fun resolveVisualTarget(loader: ClassLoader, info: ApplicationInfo) {

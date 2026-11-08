@@ -88,6 +88,20 @@ internal class ColorOsAllAppsEndpoint(
         if (state != "FLOAT_BAR_SHOWING") cancel()
     }
 
+    /**
+     * 原厂 SearchHelper 刚把 currentDataList 整份重灌（加载完成、退出搜索、折叠/展开工具、动态图标刷新）。
+     * 只处理模块面板自己的那个 SearchHelper，原厂侧边栏的「全部」面板不受影响。
+     */
+    fun onNativeListWritten(search: Any?) {
+        val content = request?.content ?: return
+        if (content.ownsSearch(search)) content.onNativeListWritten()
+    }
+
+    /** 原厂 adapter 绑定一行后：模块面板的分组标题按角色改写文案。 */
+    fun onRowBound(adapter: Any?, holder: Any?, position: Int) {
+        request?.content?.onRowBound(adapter, holder, position)
+    }
+
     fun onAdapterCreated(view: Any?, adapter: Any?) {
         val current = request ?: return
         if (current.content?.view !== view || adapter == null) return

@@ -142,24 +142,9 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
         // 先用上一份结果立刻上屏，算完再原地回写新顺序。
         FavoriteGroupInjector.prepareAsync(context, adapter.javaClass.classLoader, force = true)
         FavoriteGroupInjector.apply(adapter, context)
-        // 系统会在面板显示后再次灌入原厂数据（实测：0 → 模块顺序 → 121 条原厂列表）。
-        // 监听 adapter 变化，原地改写为模块顺序，不 notify、不重建。
-        attachDataObserver(adapter)
-        val h = android.os.Handler(android.os.Looper.getMainLooper())
-        // 兜底：面板显示后系统可能再灌一次数据，几个时间点再原地校验一次（数据相同则完全不做事）。
-        // 首次打开时系统会在面板显示后才灌数据（实测 0 → 模块顺序 → 121），
-        // 这几个点只做廉价比对，命中直接返回，未命中才重排。
-        listOf(300L, 700L, 1200L, 2000L, 3000L).forEach { d ->
-            h.postDelayed({
-                // 搜索框有内容时一律不重排：把收藏/最近灌回 mData 会把搜索结果顶掉，
-                // 界面不刷新但数据已经换了，点第一行就落到收藏组里（搜「文件」点出「翻译」）。
-                if (currentQuery().isEmpty()) {
-                    FavoriteGroupInjector.prepareAsync(context, adapter.javaClass.classLoader)
-                    FavoriteGroupInjector.applyIfStale(adapter, context)
-                }
-            }, d)
-        }
-        scheduleTitleRename()
+        // 之后系统每次重灌 currentDataList（加载完成、退出搜索等）都由 SidebarHookInstaller 的
+        // refill 钩子回调 [onNativeListWritten] 当场接管，不再按时间点轮询或挂数据观察者。
+        boundAdapter = adapter
         val original = getClick.call(adapter) ?: return
         val callback = Proxy.newProxyInstance(getClick.returnType.classLoader, arrayOf(getClick.returnType)) { proxy, method, args ->
             when (method.name) {
@@ -394,98 +379,73 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
         false
     }
 
-    /**
-     * 收藏段：面板数据异步加载，尽量在展开动画期间就完成重排，减少可见闪烁。
-     */
-    /** 系统重灌数据时恢复模块顺序：原地改列表，不触发重建。 */
-    private fun attachDataObserver(adapter: Any) {
-        runCatching {
-            // RecyclerView 的类加载器和 adapter 自己的不一定相同（adapter 是侧边栏 dex 里的），
-            // 从 adapter 的父类链上找 RecyclerView.Adapter，再从它的类加载器取内部类。
-            var sup: Class<*>? = adapter.javaClass.superclass
-            while (sup != null && !sup.name.startsWith("androidx.recyclerview")) sup = sup.superclass
-            val rvLoader = sup?.classLoader ?: adapter.javaClass.classLoader
-            val observerCls = Class.forName(
-                "androidx.recyclerview.widget.RecyclerView\$AdapterDataObserver",
-                false,
-                rvLoader,
-            )
-            val observer = java.lang.reflect.Proxy.newProxyInstance(
-                observerCls.classLoader,
-                arrayOf(observerCls),
-            ) { _, method, _ ->
-                if (method.name == "onChanged" || method.name == "onItemRangeInserted") {
-                    // 带上条目数与前三项，搜索前后数据被换成什么一眼可见。
-                    panelLog(
-                        "PANEL_OBSERVER_" + method.name +
-                            " size=" + runCatching {
-                                (getData.call(search) as? List<*>)?.size ?: -1
-                            }.getOrDefault(-1) +
-                            " head=" + runCatching {
-                                (getData.call(search) as? List<*>)
-                                    ?.take(3)
-                                    ?.joinToString(",") { row ->
-                                        (runCatching { getKey.call(dataClass.cast(row)) }.getOrNull() ?: "?") as String
-                                    }
-                            }.getOrDefault(""),
-                    )
-                    // 同上：搜索期间数据变化是系统的过滤结果，不能被收藏组覆盖。
-                    if (currentQuery().isEmpty()) FavoriteGroupInjector.apply(adapter, context)
-                }
-                null
-            }
-            adapter.javaClass.getMethod("registerAdapterDataObserver", observerCls).invoke(adapter, observer)
-        }
-    }
+    /** 本面板绑定的原厂 adapter；其 mData 与 SearchHelper.currentDataList 是同一个列表对象。 */
+    private var boundAdapter: Any? = null
 
-
-
-    private fun scheduleTitleRename() {
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        listOf(0L, 120L, 400L, 900L, 1600L).forEach { delay ->
-            handler.postDelayed({ renameGroupTitles() }, delay)
-        }
-    }
-
-
+    fun ownsSearch(candidate: Any?): Boolean = candidate != null && candidate === search
 
     /**
-     * 分组标题按出现顺序命名：第一个「收藏」，第二个「最近」。
+     * 原厂刚把 currentDataList 整份重灌。带分组标题的是全量列表（首次加载、退出搜索、
+     * 工具折叠切换），当场换成「收藏 + 最近」并通知刷新；搜索结果不带标题，原样保留。
      *
-     * 标题行的文案由布局里的固定字符串决定（都是「工具」），按文本改名会把两个都改成收藏，
-     * 所以这里按顺序取前两个标题 TextView 直接赋文本。
-     *
-     * 方法会被多个延迟点重复调用（面板展开、数据灌入的时间窗不确定）；标题已改写的轮次
-     * 只做一次文本比较就返回，不产生日志。
+     * 钩子在原方法返回后同步执行，与原厂的 notify 处于同一条消息，下一帧布局读到的就是模块列表，
+     * 原厂列表不会出现在屏幕上。
      */
-    private fun renameGroupTitles() {
+    fun onNativeListWritten() {
         if (closed) return
-        runCatching {
-            val found = ArrayList<android.widget.TextView>()
-            collectTitles(view, GROUP_TITLE_LABELS, found)
-            if (found.isEmpty()) return
-            var renamed = 0
-            if (found[0].text?.toString() != GROUP_TITLE_PINNED) {
-                found[0].text = GROUP_TITLE_PINNED
-                renamed++
-            }
-            if (found.size > 1 && found[1].text?.toString() != GROUP_TITLE_RECENT) {
-                found[1].text = GROUP_TITLE_RECENT
-                renamed++
-            }
-            if (renamed > 0) panelLog("PANEL_TITLES_RENAMED_" + renamed)
-        }
-    }
-
-    private fun collectTitles(root: View, labels: Set<String>, out: MutableList<android.widget.TextView>) {
-        if (root is android.widget.TextView) {
-            val text = root.text?.toString()?.trim()
-            if (text != null && text in labels) out.add(root)
+        val adapter = boundAdapter ?: return
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post { onNativeListWritten() }
             return
         }
-        if (root is ViewGroup) {
-            for (i in 0 until root.childCount) collectTitles(root.getChildAt(i), labels, out)
+        val list = getData.call(search) as? List<*> ?: return
+        val hasTitles = list.any { it?.javaClass?.simpleName == "TitleLabelData" }
+        if (!hasTitles || currentQuery().isNotEmpty()) {
+            panelLog("PANEL_REFILL_SKIPPED size=" + list.size + " titles=" + hasTitles)
+            return
         }
+        panelLog("PANEL_REFILL_TAKEOVER size=" + list.size)
+        FavoriteGroupInjector.apply(adapter, context, notify = true)
+    }
+
+    /**
+     * 原厂 onBindViewHolder 返回后调用。分组标题行（LabelViewHolder）的文案来自 viewType
+     * 对应布局的固定字符串，原厂绑定时不改它；这里按数据行登记的角色写入「收藏 / 最近」。
+     * 只改模块登记过的标题，原厂列表的「工具 / 应用」保持原样。
+     */
+    fun onRowBound(adapter: Any?, holder: Any?, position: Int) {
+        if (closed || adapter == null || adapter !== boundAdapter || holder == null) return
+        runCatching {
+            val data = adapter.javaClass.getMethod("getMData").invoke(adapter) as? List<*> ?: return
+            val role = FavoriteGroupInjector.titleRole(data.getOrNull(position)) ?: return
+            val itemView = itemViewOf(holder) ?: return
+            val title = firstTextView(itemView) ?: return
+            val label = PanelGroupLabels.of(role)
+            if (title.text?.toString() != label) title.text = label
+        }.onFailure { panelLog("PANEL_TITLE_BIND_FAILED " + it.javaClass.simpleName) }
+    }
+
+    /** RecyclerView.ViewHolder.itemView：字段名未被混淆（16.11.3 核对），沿父类链查找。 */
+    private fun itemViewOf(holder: Any): View? {
+        var type: Class<*>? = holder.javaClass
+        while (type != null && type != Any::class.java) {
+            val current: Class<*> = type
+            val field = runCatching { current.getDeclaredField("itemView") }.getOrNull()
+            if (field != null) {
+                field.isAccessible = true
+                return field.get(holder) as? View
+            }
+            type = current.superclass
+        }
+        return null
+    }
+
+    private fun firstTextView(root: View): android.widget.TextView? {
+        if (root is android.widget.TextView) return root
+        if (root is ViewGroup) {
+            for (i in 0 until root.childCount) firstTextView(root.getChildAt(i))?.let { return it }
+        }
+        return null
     }
 
     fun leaveSearch(): Boolean {
@@ -561,6 +521,7 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
     fun close() {
         if (closed) return
         closed = true
+        boundAdapter = null
         try {
             if (view.isNotEmpty()) {
                 (enterSearch?.call(search) as? Animator)?.cancel()
@@ -618,11 +579,6 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
     }
 
     companion object {
-        /** 标题行的原始文案与改写后的文案；重复回调时按此比较，已改写的不再计数。 */
-        private val GROUP_TITLE_LABELS = hashSetOf("工具", "应用", "收藏", "最近")
-        private const val GROUP_TITLE_PINNED = "收藏"
-        private const val GROUP_TITLE_RECENT = "最近"
-
         const val ALL_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.allpanel.AllAppPanelView"
         const val ADAPTER_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.allpanel.AllAppRecyclerAdapter"
         const val ROUTER_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.data.viewdatahandlers.AllAppDataHandlerImpl"
