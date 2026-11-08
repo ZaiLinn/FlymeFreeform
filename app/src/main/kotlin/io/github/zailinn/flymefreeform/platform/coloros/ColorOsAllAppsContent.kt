@@ -16,7 +16,12 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
 /** 仅适配已核对的侧栏版本：独立创建内容视图，不修改原生面板状态。 */
-internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebarVisualTarget) {
+internal class ColorOsAllAppsContent(
+    loader: ClassLoader,
+    target: ColorOsSidebarVisualTarget,
+    /** 为 true 时改写为「收藏 + 最近」；false 保持原厂「工具 + 全部应用」。每次读取，设置改动下次打开即生效。 */
+    private val rewriteList: () -> Boolean = { true },
+) {
     private val allClass = loader.loadClass(ALL_CLASS)
     private val searchClass = loader.loadClass(SEARCH_CLASS)
     private val mainClass = loader.loadClass(MAIN_CLASS)
@@ -78,6 +83,13 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
     private var blurView: View? = null
     private var blurPrepared = false
     private var card: FrameLayout? = null
+    /** 原有列表模式下的字母索引条；收藏 + 最近模式不创建。 */
+    private var indexBar: PanelIndexBar? = null
+    /** 字母 → 原有列表里该字母第一个应用的位置。 */
+    private var letterTargets: Map<Char, Int> = emptyMap()
+    /** 已为索引条让出右侧空间的列表，避免重复加内边距。 */
+    private var paddedRecycler: View? = null
+    private val getLabel = getEntry.returnType.getMethod("getLabel")
 
     init {
         require(ViewGroup::class.java.isAssignableFrom(allClass))
@@ -140,11 +152,14 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
         )
         // 每次打开都强制重算：最近组要反映刚用过的应用，不能吃 15s 缓存；
         // 先用上一份结果立刻上屏，算完再原地回写新顺序。
-        FavoriteGroupInjector.prepareAsync(context, adapter.javaClass.classLoader, force = true)
-        FavoriteGroupInjector.apply(adapter, context)
+        if (rewriteList()) {
+            FavoriteGroupInjector.prepareAsync(context, adapter.javaClass.classLoader, force = true)
+            FavoriteGroupInjector.apply(adapter, context)
+        }
         // 之后系统每次重灌 currentDataList（加载完成、退出搜索等）都由 SidebarHookInstaller 的
         // refill 钩子回调 [onNativeListWritten] 当场接管，不再按时间点轮询或挂数据观察者。
         boundAdapter = adapter
+        if (!rewriteList()) refreshAlphabet()
         val original = getClick.call(adapter) ?: return
         val callback = Proxy.newProxyInstance(getClick.returnType.classLoader, arrayOf(getClick.returnType)) { proxy, method, args ->
             when (method.name) {
@@ -398,6 +413,10 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
             android.os.Handler(android.os.Looper.getMainLooper()).post { onNativeListWritten() }
             return
         }
+        if (!rewriteList()) {
+            refreshAlphabet()
+            return
+        }
         val list = getData.call(search) as? List<*> ?: return
         val hasTitles = list.any { it?.javaClass?.simpleName == "TitleLabelData" }
         if (!hasTitles || currentQuery().isNotEmpty()) {
@@ -448,6 +467,156 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
         return null
     }
 
+    /**
+     * 原有列表模式：按「应用」段各条目名称的首字母（中文取拼音）求每个字母的跳转位置，刷新字母索引条。
+     *
+     * 原厂「应用」段本身已按首字母排好，这里不改顺序、不 notify，只读 currentDataList。
+     * 搜索中（列表无标题或搜索框有字）隐藏索引条。
+     */
+    private fun refreshAlphabet() {
+        val bar = indexBar ?: return
+        if (boundAdapter == null) return bar.hide()
+        val list = getData.call(search) as? List<*>
+        val start = list?.indexOfFirst(::isAppTitle) ?: -1
+        if (list == null || start < 0 || currentQuery().isNotEmpty()) {
+            // 作废尚在后台计算的结果，搜索中不会被它重新显示出来。
+            alphabetGeneration++
+            letterTargets = emptyMap()
+            bar.hide()
+            return
+        }
+        var end = start + 1
+        while (end < list.size && list[end]?.javaClass?.simpleName != "TitleLabelData") end++
+        // 主线程只取名称（反射读条目）；转拼音首字母在后台做，全部命中缓存时直接算。
+        val labels = list.subList(start + 1, end).map { item -> item?.let(::labelOf) ?: "" }
+        val generation = ++alphabetGeneration
+        val apply = { buckets: List<Char> ->
+            if (!closed && indexBar === bar && generation == alphabetGeneration) {
+                letterTargets = PanelAlphabet.firstIndices(buckets, offset = start + 1)
+                panelLog("PANEL_ALPHABET apps=" + buckets.size + " letters=" + letterTargets.size)
+                placeIndexBar(bar, attempt = 0)
+            }
+        }
+        if (PanelPinyin.allCached(labels)) {
+            apply(labels.map(PanelPinyin::bucketOf))
+            return
+        }
+        val surface = card ?: return
+        PanelPinyin.executor.execute {
+            val buckets = runCatching { labels.map(PanelPinyin::bucketOf) }.getOrNull() ?: return@execute
+            surface.post { apply(buckets) }
+        }
+    }
+
+    /** 每次重算索引递增；后台结果回到主线程时只采用最新一次。 */
+    private var alphabetGeneration = 0
+
+    /**
+     * 把索引条摆到列表右侧。面板打开时原厂列表往往已加载完（绑定时即 543 项），此时 adapter 可能
+     * 还没挂到 RecyclerView 上、列表也还没布局，之后又不会再有重灌回调；所以这里逐帧重试，
+     * 直到找到已布局的列表，最多 [INDEX_BAR_MAX_ATTEMPTS] 次。
+     */
+    private fun placeIndexBar(bar: PanelIndexBar, attempt: Int) {
+        val surface = card ?: return
+        surface.postDelayed({
+            if (closed || indexBar !== bar || letterTargets.isEmpty()) return@postDelayed
+            val recycler = recyclerView()
+            if (recycler == null || !recycler.isLaidOut || recycler.height <= 0) {
+                if (attempt < INDEX_BAR_MAX_ATTEMPTS) {
+                    placeIndexBar(bar, attempt + 1)
+                } else {
+                    panelLog("PANEL_ALPHABET_NO_LIST found=" + (recycler != null))
+                    bar.hide()
+                }
+                return@postDelayed
+            }
+            // 列表右侧让出索引条的宽度，最右一列图标不会被索引条挡住触摸。
+            if (paddedRecycler !== recycler) {
+                val inset = (INDEX_BAR_INSET_DP * context.resources.displayMetrics.density).toInt()
+                recycler.setPadding(recycler.paddingLeft, recycler.paddingTop, recycler.paddingRight + inset, recycler.paddingBottom)
+                paddedRecycler = recycler
+            }
+            val bounds = android.graphics.Rect(0, 0, recycler.width, recycler.height)
+            runCatching { surface.offsetDescendantRectToMyCoords(recycler, bounds) }
+                .onFailure {
+                    panelLog("PANEL_ALPHABET_BOUNDS_FAILED " + it.javaClass.simpleName)
+                    return@postDelayed bar.hide()
+                }
+            bar.show(letterTargets.keys, bounds.top, bounds.bottom)
+            panelLog("PANEL_ALPHABET_SHOWN attempt=" + attempt + " top=" + bounds.top + " bottom=" + bounds.bottom)
+        }, if (attempt == 0) 0L else INDEX_BAR_RETRY_MS)
+    }
+
+    private fun isAppTitle(item: Any?): Boolean =
+        item?.javaClass?.simpleName == "TitleLabelData" &&
+            (runCatching { item.javaClass.getMethod("getViewType").invoke(item) as? Enum<*> }.getOrNull())?.name == APP_TITLE_VIEW_TYPE
+
+    private fun labelOf(item: Any): String = try {
+        getEntry.call(item)?.let { getLabel.call(it) as? String } ?: ""
+    } catch (_: Exception) {
+        ""
+    }
+
+    /** 绑定了本面板 adapter 的那个 RecyclerView；adapter 尚未挂上时退回面板里第一个 RecyclerView。 */
+    private fun recyclerView(): ViewGroup? {
+        val adapter = boundAdapter ?: return null
+        var firstRecycler: ViewGroup? = null
+        fun isRecycler(type: Class<*>?): Boolean {
+            var current = type
+            while (current != null && current != Any::class.java) {
+                if (current.name == RECYCLER_CLASS) return true
+                current = current.superclass
+            }
+            return false
+        }
+        fun find(root: View): ViewGroup? {
+            if (root is ViewGroup) {
+                if (isRecycler(root.javaClass)) {
+                    val own = runCatching { root.javaClass.getMethod("getAdapter").invoke(root) }.getOrNull()
+                    if (own === adapter) return root
+                    if (firstRecycler == null) firstRecycler = root
+                }
+                for (i in 0 until root.childCount) find(root.getChildAt(i))?.let { return it }
+            }
+            return null
+        }
+        return find(view) ?: firstRecycler
+    }
+
+    /** 索引条回调：把该字母第一个应用滚到列表顶部。 */
+    private fun jumpTo(letter: Char) {
+        if (closed) return
+        val target = PanelAlphabet.targetFor(letter, letterTargets) ?: return
+        val recycler = recyclerView() ?: return
+        runCatching {
+            recycler.javaClass.getMethod("stopScroll").invoke(recycler)
+            val manager = recycler.javaClass.getMethod("getLayoutManager").invoke(recycler)
+            val withOffset = manager?.javaClass?.methods?.firstOrNull {
+                it.name == "scrollToPositionWithOffset" && it.parameterCount == 2
+            }
+            if (withOffset != null) {
+                withOffset.invoke(manager, target, 0)
+            } else {
+                recycler.javaClass.getMethod("scrollToPosition", Int::class.javaPrimitiveType).invoke(recycler, target)
+            }
+        }.onFailure { panelLog("PANEL_ALPHABET_JUMP_FAILED " + it.javaClass.simpleName) }
+    }
+
+    /** 面板主文字颜色，取侧边栏主题的 couiColorPrimaryTextOnPopup；取不到用深灰。 */
+    @Suppress("DiscouragedApi")
+    private fun primaryTextColor(): Int = try {
+        val id = context.resources.getIdentifier("couiColorPrimaryTextOnPopup", "attr", ColorOsSidebarTarget.PACKAGE_NAME)
+        val value = TypedValue()
+        if (id != 0 && context.theme.resolveAttribute(id, value, true)) {
+            if (value.type in TypedValue.TYPE_FIRST_COLOR_INT..TypedValue.TYPE_LAST_COLOR_INT) value.data
+            else context.getColor(value.resourceId)
+        } else {
+            0xFF333333.toInt()
+        }
+    } catch (_: Exception) {
+        0xFF333333.toInt()
+    }
+
     fun leaveSearch(): Boolean {
         if (getSearchState.call(search) != true) return false
         cancelSearch.call(view, true)
@@ -468,7 +637,14 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
         shadow?.setup?.call(null, surface)
         shadow?.update?.call(null, surface, 1f)
         surface.addView(view, FrameLayout.LayoutParams(-1, -1))
+        if (!rewriteList()) {
+            indexBar = PanelIndexBar(context, primaryTextColor(), ::jumpTo).also {
+                surface.addView(it, FrameLayout.LayoutParams(-1, -1))
+            }
+        }
         card = surface
+        // adapter 可能先于卡片绑定，此时索引条还不存在；卡片建好后补算一次。
+        if (indexBar != null && boundAdapter != null) refreshAlphabet()
         return surface
     }
 
@@ -537,6 +713,9 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
                 sidebarBlur.close()
                 blur = null
                 card = null
+                indexBar = null
+                letterTargets = emptyMap()
+                paddedRecycler = null
             }
         }
     }
@@ -587,5 +766,12 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
         const val HANDLER_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.data.viewdatahandlers.ViewDataHandlerImpl"
         const val MAIN_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.PanelMainView"
         const val USER_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView"
+        /** 原厂「应用」分组标题的 viewType（buildAllList 字节码核对）。 */
+        const val APP_TITLE_VIEW_TYPE = "ALL_APP_TABLE_APP"
+        /** 列表为索引条让出的右侧宽度，与索引条触摸区一致。 */
+        const val INDEX_BAR_INSET_DP = 32f
+        const val INDEX_BAR_MAX_ATTEMPTS = 20
+        const val INDEX_BAR_RETRY_MS = 50L
+        const val RECYCLER_CLASS = "androidx.recyclerview.widget.RecyclerView"
     }
 }

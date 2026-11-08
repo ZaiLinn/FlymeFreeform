@@ -2,7 +2,10 @@ package io.github.zailinn.flymefreeform.platform.coloros
 
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.os.SystemClock
 import android.view.Gravity
@@ -19,6 +22,7 @@ import android.window.OnBackInvokedDispatcher
 import androidx.core.view.isNotEmpty
 import io.github.zailinn.flymefreeform.window.AllAppsPanelGeometry
 import io.github.zailinn.flymefreeform.window.AllAppsPanelMotion
+import io.github.zailinn.flymefreeform.log.ModuleLog
 
 /** 独立窗口只承载本次新建的全部内容；不挂接原侧栏父视图，也不改变其状态机。 */
 internal class ColorOsAllAppsWindow(
@@ -48,6 +52,17 @@ internal class ColorOsAllAppsWindow(
     private val backCallback = OnBackInvokedCallback { back() }
     private val animation = Runnable { animateFrame() }
     private val timeout = Runnable { dismiss() }
+    // 回桌面（homekey）或手势上滑（recentapps）时系统广播关闭临时窗口：面板随之收起，不留在桌面上。
+    private val systemDialogsReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != Intent.ACTION_CLOSE_SYSTEM_DIALOGS) return
+                val reason = intent.getStringExtra(CLOSE_REASON_EXTRA)
+                ModuleLog.debug(LOG_TAG) { "ALL_APPS_CLOSE_SYSTEM_DIALOGS_" + reason }
+                if (reason in CLOSING_REASONS) safely { dismiss() }
+            }
+        }
+    private var watchingSystemDialogs = false
     private val firstFrame = ViewTreeObserver.OnPreDrawListener { prepareFirstFrame() }
     private var waitingForFirstFrame = true
     private val root = object : FrameLayout(context) {
@@ -131,6 +146,13 @@ internal class ColorOsAllAppsWindow(
         }
         manager.addView(root, params)
         attached = true
+        try {
+            // 受保护广播，只有系统能发；接收方是侧边栏进程，必须导出才能收到 system 发出的广播。
+            context.registerReceiver(systemDialogsReceiver, IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS), Context.RECEIVER_EXPORTED)
+            watchingSystemDialogs = true
+        } catch (exception: RuntimeException) {
+            onFailure(exception)
+        }
         root.viewTreeObserver.addOnPreDrawListener(firstFrame)
         root.requestApplyInsets()
         root.requestFocus()
@@ -219,6 +241,14 @@ internal class ColorOsAllAppsWindow(
         hiddenAction = null
         root.removeCallbacks(animation)
         root.removeCallbacks(timeout)
+        if (watchingSystemDialogs) {
+            watchingSystemDialogs = false
+            try {
+                context.unregisterReceiver(systemDialogsReceiver)
+            } catch (_: IllegalArgumentException) {
+                // 已注销。
+            }
+        }
         try {
             content.close()
         } catch (exception: Exception) {
@@ -345,5 +375,15 @@ internal class ColorOsAllAppsWindow(
             onFailure(exception)
             dispose()
         }
+    }
+
+    private companion object {
+        const val LOG_TAG = "FlymeFreeform"
+
+        /** Intent.ACTION_CLOSE_SYSTEM_DIALOGS 的原因字段（隐藏 API 常量的字面值）。 */
+        const val CLOSE_REASON_EXTRA = "reason"
+
+        /** 本机实测只有这两种：回桌面 homekey、手势上滑 recentapps。 */
+        val CLOSING_REASONS = setOf("homekey", "recentapps")
     }
 }

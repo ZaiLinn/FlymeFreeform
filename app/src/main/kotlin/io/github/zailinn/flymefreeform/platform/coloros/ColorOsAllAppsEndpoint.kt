@@ -74,7 +74,12 @@ internal class ColorOsAllAppsEndpoint(
         // 延后一点再算，等 ToolEntryHelper / ToolProxy 初始化完，工具类条目才不会缺。
         handler.postDelayed(
             {
-                if (!disposed) FavoriteGroupInjector.prepareAsync(service, loader, force = true)
+                if (!disposed && !configuration.snapshot.panelNativeList) {
+                    FavoriteGroupInjector.prepareAsync(service, loader, force = true)
+                } else if (!disposed) {
+                    // 原有列表模式的字母索引要转拼音，转换器首次创建较慢，提前在后台建好。
+                    Thread({ runCatching { PanelPinyin.warm() } }, "FlymeFreeform-PinyinWarm").apply { isDaemon = true }.start()
+                }
             },
             2_000L,
         )
@@ -241,7 +246,7 @@ internal class ColorOsAllAppsEndpoint(
         watchingPackages = true
         service.registerComponentCallbacks(components)
         watchingConfiguration = true
-        next.content = ColorOsAllAppsContent(loader, target)
+        next.content = ColorOsAllAppsContent(loader, target) { !configuration.snapshot.panelNativeList }
         advance()
     }
 
