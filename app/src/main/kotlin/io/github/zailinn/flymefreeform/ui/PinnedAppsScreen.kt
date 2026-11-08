@@ -1,13 +1,14 @@
 package io.github.zailinn.flymefreeform.ui
 
+import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -58,6 +59,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
@@ -174,6 +176,8 @@ internal fun PinnedAppsScreen(
     var draggingComponent by remember { mutableStateOf<PinnedTarget?>(null) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
     var rowHeightPx by remember { mutableFloatStateOf(0f) }
+    // 拖动排序的触感：长按拿起、每换一格、松手各一次，与扇形跨圈震动同属 View 触感常量。
+    val view = LocalView.current
     val scrollBehavior = MiuixScrollBehavior()
     val backdrop = rememberTopBarBackdrop()
     val topBarColor = topBarContainerColor(backdrop)
@@ -343,12 +347,14 @@ internal fun PinnedAppsScreen(
                                                 localOrders[arc] = displayed
                                                 draggingComponent = component
                                                 dragOffsetY = 0f
+                                                view.performHapticFeedback(HapticFeedbackConstants.DRAG_START)
                                             },
                                             onDrag = { deltaY ->
                                                 if (rowHeightPx > 0f) {
                                                     dragOffsetY += deltaY
                                                     val order = displayedOf(arc).toMutableList()
-                                                    var current = order.indexOf(component)
+                                                    val start = order.indexOf(component)
+                                                    var current = start
                                                     while (current >= 0 &&
                                                         dragOffsetY > rowHeightPx / 2 &&
                                                         current < order.size - 1
@@ -365,11 +371,17 @@ internal fun PinnedAppsScreen(
                                                         dragOffsetY += rowHeightPx
                                                         current--
                                                     }
-                                                    localOrders[arc] = order
+                                                    if (current != start) {
+                                                        localOrders[arc] = order
+                                                        view.performHapticFeedback(HapticFeedbackConstants.SEGMENT_TICK)
+                                                    }
                                                 }
                                             },
                                             onDragEnd = {
                                                 val order = localOrders[arc]
+                                                if (draggingComponent != null) {
+                                                    view.performHapticFeedback(HapticFeedbackConstants.GESTURE_END)
+                                                }
                                                 draggingComponent = null
                                                 dragOffsetY = 0f
                                                 if (order != null) {
@@ -621,17 +633,29 @@ private fun AddedAppRow(
     onDrag: (Float) -> Unit,
     onDragEnd: () -> Unit,
 ) {
-    // 被拖行换位时，其余行先从旧视觉位置吸附再弹簧归位，形成实时让位动画。
+    // 被拖行换位时，其余行先停在旧视觉位置再弹簧归位，形成实时让位动画。
     // 只在拖动排序期间这样做：增删引起的下标变化由行本身的展开 / 收起动画带动，再叠加位移会抖一下。
-    val offsetAnim = remember { Animatable(0f) }
+    // 补偿位移必须与新下标在同一帧生效：SideEffect 在本帧布局与绘制之前执行，
+    // 若放进协程再 snapTo，会先按新位置画一帧再跳回旧位置，表现为图标闪动。
+    // 松手时被拖行同理：从手指下的位置接着归位，而不是先跳回槽位。
+    var shift by remember { mutableFloatStateOf(0f) }
     var restIndex by remember { mutableIntStateOf(index) }
+    val lastDrag = remember { floatArrayOf(0f) }
+    var wasDragging by remember { mutableStateOf(dragging) }
+    SideEffect {
+        if (dragging) lastDrag[0] = dragOffsetY
+        if (wasDragging && !dragging) shift = lastDrag[0]
+        wasDragging = dragging
+        if (index != restIndex) {
+            if (!dragging && reordering && rowHeightPx > 0f) shift += (restIndex - index) * rowHeightPx
+            restIndex = index
+        }
+    }
     LaunchedEffect(index, dragging) {
-        if (dragging || !reordering || index == restIndex) {
-            restIndex = index
-        } else {
-            offsetAnim.snapTo(offsetAnim.value + (restIndex - index) * rowHeightPx)
-            restIndex = index
-            offsetAnim.animateTo(0f, spring(stiffness = Spring.StiffnessMedium))
+        if (dragging) {
+            shift = 0f
+        } else if (shift != 0f) {
+            animate(shift, 0f, animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) { value, _ -> shift = value }
         }
     }
     val currentOnDragStart by rememberUpdatedState(onDragStart)
@@ -658,7 +682,7 @@ private fun AddedAppRow(
             Modifier
                 .fillMaxWidth()
                 .onSizeChanged { size -> onRowHeight(size.height.toFloat()) }
-                .graphicsLayer { translationY = if (dragging) dragOffsetY else offsetAnim.value }
+                .graphicsLayer { translationY = if (dragging) dragOffsetY else shift }
                 .zIndex(if (dragging) 1f else 0f)
                 .then(dragModifier),
         title = app?.label ?: component.displayIdentity(),
