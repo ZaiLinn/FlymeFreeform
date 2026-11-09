@@ -69,6 +69,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import io.github.zailinn.flymefreeform.apps.AppListStatus
 import io.github.zailinn.flymefreeform.apps.IconShapes
 import io.github.zailinn.flymefreeform.R
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
@@ -109,21 +110,21 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 internal fun PinnedAppsScreen(
     state: FrameworkConnectionState,
     apps: List<SelectableEntry>,
+    appStatus: AppListStatus,
+    onRetryApps: () -> Unit,
     sidebarCatalog: SidebarCatalogState,
     onRefreshCatalog: () -> Unit,
-    onCancelCatalog: () -> Unit,
     onBack: () -> Unit,
     onPinnedTargetsChange: (List<PinnedTarget>) -> Unit,
     onInnerArcTargetsChange: (Int, List<PinnedTarget>) -> Unit,
     onMoveTargetToArc: (PinnedTarget, Int) -> Unit,
 ) {
     val refreshCatalog by rememberUpdatedState(onRefreshCatalog)
-    val cancelCatalog by rememberUpdatedState(onCancelCatalog)
     // 以 settingsEditable 为键，不用 canChangeSettings：每次增删都会短暂置起 isUpdating，
-    // 若随之重跑，就会取消并重新请求侧边栏目录，列表顶部反复弹出「正在读取侧边栏目录」，工具与快捷入口也随之变灰。
+    // 若随之重跑，就会反复请求侧边栏目录。暂停时不取消进行中的请求，恢复时由仓库合并。
     LifecycleResumeEffect(state.settingsEditable) {
         if (state.settingsEditable) refreshCatalog()
-        onPauseOrDispose { cancelCatalog() }
+        onPauseOrDispose { }
     }
     // 多圆弧时每圈单独编辑：第 1 圈即默认圆弧，内侧各圈保存在独立的键里。
     // 减少圆弧条数只是不再显示多出的页签，已保存的固定项不动，再次增加时原样恢复。
@@ -471,17 +472,8 @@ internal fun PinnedAppsScreen(
             val displayed = displayedOf(selectedArc)
             // 勾选状态跟随 displayed，sheet 内增删即时可见
             val addedSet = remember(displayed) { displayed.toSet() }
-            val candidates =
-                remember(allEntries, pickerQuery) {
-                    if (pickerQuery.isBlank()) {
-                        allEntries
-                    } else {
-                        allEntries.filter {
-                            it.label.contains(pickerQuery, ignoreCase = true) ||
-                                it.packageName.contains(pickerQuery, ignoreCase = true)
-                        }
-                    }
-                }
+            // 拼音匹配首次要转写全部名称，放到后台；结果出来前沿用上一次的列表。
+            val candidates = rememberSearchResults(allEntries, pickerQuery)
             val groups = remember(candidates) {
                 listOf(
                     R.string.entry_group_tools to candidates.filter { (it.target as? PinnedTarget.Sidebar)?.kind == PinnedTarget.Kind.Tool },
@@ -519,7 +511,7 @@ internal fun PinnedAppsScreen(
                     LazyColumn(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
                         if (sidebarCatalog.status != SidebarCatalogStatus.Ready) {
                             item(key = "sidebar_status") {
-                                // Idle 只出现在读取被暂停打断之后，恢复时会重新读取，按读取中显示。
+                                // Idle 只在首次请求前短暂出现，按读取中显示。
                                 val unavailable = sidebarCatalog.status == SidebarCatalogStatus.Unavailable
                                 BasicComponent(
                                     title = stringResource(if (unavailable) R.string.sidebar_catalog_unavailable else R.string.sidebar_catalog_loading),
@@ -531,15 +523,18 @@ internal fun PinnedAppsScreen(
                                 )
                             }
                         }
+                        if (apps.isEmpty() && appStatus != AppListStatus.Ready) {
+                            item(key = "apps_status") { AppListStatusRow(appStatus, onRetryApps) }
+                        }
                         when {
-                            allEntries.isEmpty() ->
-                                item(key = "apps_loading") {
+                            allEntries.isEmpty() && appStatus == AppListStatus.Ready ->
+                                item(key = "apps_empty") {
                                     BasicComponent(
-                                        title = stringResource(R.string.available_apps_loading),
-                                        summary = stringResource(R.string.available_apps_loading_summary),
+                                        title = stringResource(R.string.available_apps_empty),
                                         enabled = false,
                                     )
                                 }
+                            allEntries.isEmpty() -> Unit
                             candidates.isEmpty() ->
                                 item(key = "apps_no_match") {
                                     BasicComponent(
@@ -750,8 +745,10 @@ private fun AddedAppRow(
 @Composable
 private fun AppIcon(app: SelectableEntry) {
     Box(modifier = Modifier.size(44.dp)) {
+        // 应用图标按需加载，未就绪时留空位。
+        val icon = rememberEntryIcon(app) ?: return@Box
         Image(
-            bitmap = rememberShapedIcon(app.icon, app.isAppIcon),
+            bitmap = icon,
             contentDescription = null,
             // 方形保持原有的列表裁切；圆形已在图标里裁好。
             modifier =

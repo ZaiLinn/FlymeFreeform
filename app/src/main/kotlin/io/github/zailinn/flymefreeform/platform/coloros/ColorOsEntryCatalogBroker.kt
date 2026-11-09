@@ -24,6 +24,19 @@ internal class ColorOsEntryCatalogBroker(
     private val onCatalog: (List<SelectableEntry>) -> Unit,
 ) {
     private val connection = ColorOsSidebarEntryConnection(context, handler, log)
+    private val store = SidebarCatalogStore(log)
+    /** 已收到侧边栏的真实目录（或目录已被作废）：之后到达的本地副本不再采用。 */
+    private var liveReceived = false
+    /** 切换用户时递增：之前开始读取的本地副本属于旧用户，不再采用。 */
+    private var userGeneration = 0
+    /** 最近一次发布的目录；包变化时在它上面增删，不先清空。 */
+    private var current: List<SelectableEntry> = emptyList()
+    /** 读取途中有包变化：这次结果可能已过时，完成后再读一次。 */
+    private var reloadAfterCurrent = false
+    private var retryIndex = 0
+    /** 主动取消时连接会以失败回调，此时不安排重试。 */
+    private var cancelling = false
+    private val retry = Runnable { requestCatalog() }
     private val worker = ThreadPoolExecutor(1, 1, 10, TimeUnit.SECONDS, ArrayBlockingQueue(4),
         { task -> Thread(task, "FlymeFreeform-CatalogRelay") }, ThreadPoolExecutor.AbortPolicy()).apply { allowCoreThreadTimeOut(true) }
     private val callbacks = mutableListOf<(List<SelectableEntry>?) -> Unit>()
@@ -40,9 +53,13 @@ internal class ColorOsEntryCatalogBroker(
                 val deadline = intent.getLongExtra(SidebarEntryProtocol.DEADLINE, 0)
                 val reply = intent.getParcelableExtra(SidebarEntryProtocol.REPLY, Messenger::class.java) ?: return
                 val now = SystemClock.uptimeMillis()
-                if (!SidebarProtocol.isValidRequestId(id) || !SidebarProtocol.isValidDeadline(deadline, now, SidebarEntryProtocol.TIMEOUT_MS) ||
-                    now - lastRequestAt < 500L
-                ) return
+                if (!SidebarProtocol.isValidRequestId(id) || !SidebarProtocol.isValidDeadline(deadline, now, SidebarEntryProtocol.TIMEOUT_MS)) return
+                if (now - lastRequestAt < THROTTLE_MS) {
+                    // 明确告诉客户端稍后重发，否则它要白等到超时。
+                    try { reply.send(SidebarEntryProtocol.message(SidebarEntryProtocol.BUSY, id)) }
+                    catch (_: android.os.RemoteException) {}
+                    return
+                }
                 lastRequestAt = now
                 worker.execute {
                     try {
@@ -74,6 +91,40 @@ internal class ColorOsEntryCatalogBroker(
         } catch (exception: RuntimeException) {
             log(Log.WARN, "ENTRY_CATALOG_RECEIVER_UNAVAILABLE", exception)
         }
+        // 重启后先显示上次的目录；真实目录到达后整体替换。
+        loadStored()
+    }
+
+    private fun loadStored() {
+        val generation = userGeneration
+        store.load { entries ->
+            handler.post {
+                if (!liveReceived && generation == userGeneration) {
+                    current = entries
+                    onCatalog(entries)
+                }
+            }
+        }
+    }
+
+    /**
+     * 切换用户：旧用户的条目立即作废（在途读取取消、目录清空），先换上新用户的本地副本，
+     * [reload] 时向新用户的侧边栏重读。侧边栏连接自己会在切换时断开，下次请求按新用户重连。
+     */
+    fun userSwitched(reload: Boolean) {
+        handler.removeCallbacks(retry)
+        retryIndex = 0
+        cancelQuietly()
+        refreshing = false
+        reloadAfterCurrent = false
+        userGeneration++
+        liveReceived = false
+        if (current.isNotEmpty()) {
+            current = emptyList()
+            onCatalog(emptyList())
+        }
+        loadStored()
+        if (reload) refresh()
     }
 
     fun refresh(onComplete: ((List<SelectableEntry>?) -> Unit)? = null) {
@@ -81,6 +132,13 @@ internal class ColorOsEntryCatalogBroker(
             if (callbacks.size >= 2) { onComplete(null); return }
             callbacks += onComplete
         }
+        // 外部发起的刷新重新计重试次数。
+        handler.removeCallbacks(retry)
+        retryIndex = 0
+        requestCatalog()
+    }
+
+    private fun requestCatalog() {
         if (refreshing) return
         refreshing = true
         if (!connection.request { entries, _ -> publish(entries) }) publish(null)
@@ -104,19 +162,69 @@ internal class ColorOsEntryCatalogBroker(
 
     fun cancelLaunch() { if (launching) connection.cancel() }
 
-    fun cancel() = connection.cancel()
+    fun cancel() {
+        handler.removeCallbacks(retry)
+        retryIndex = 0
+        cancelQuietly()
+    }
 
-    fun invalidate() {
-        connection.cancel()
-        onCatalog(emptyList())
+    /** 模块关闭：除取消外还解除对侧边栏服务的绑定（见 [ColorOsSidebarEntryConnection.release]）。 */
+    fun release() {
+        handler.removeCallbacks(retry)
+        retryIndex = 0
+        cancelling = true
+        try { connection.release() } finally { cancelling = false }
+    }
+
+    /**
+     * 有包安装、更新或卸载。旧目录继续显示，不先清空：清空后要等侧边栏回传才恢复，
+     * 读取失败时固定的工具会一直消失。卸载的包立即移除其条目；[reload] 时后台重读，读到后整体替换。
+     */
+    fun packageChanged(packageName: String?, removed: Boolean, reload: Boolean) {
+        // 副本早于这次变化，之后不再采用。
+        liveReceived = true
+        if (removed && !packageName.isNullOrEmpty()) {
+            val kept = current.filterNot { it.packageName == packageName }
+            if (kept.size != current.size) {
+                current = kept
+                onCatalog(kept)
+            }
+        }
+        if (!reload) return
+        if (refreshing) reloadAfterCurrent = true else refresh()
     }
 
     private fun publish(entries: List<SelectableEntry>?) {
         refreshing = false
-        if (entries != null) onCatalog(entries)
+        val reloadNow = reloadAfterCurrent
+        reloadAfterCurrent = false
+        if (entries != null) {
+            liveReceived = true
+            retryIndex = 0
+            current = entries
+            onCatalog(entries)
+            store.save(entries)
+        } else if (!cancelling && retryIndex < RETRY_DELAYS_MS.size) {
+            // 超时或侧边栏未就绪：按退避再试，避免一次失败后要等下次解锁或改固定项才重读。
+            val delay = RETRY_DELAYS_MS[retryIndex++]
+            log(Log.WARN, "ENTRY_CATALOG_RETRY_" + retryIndex + "_IN_" + delay + "MS", null)
+            handler.removeCallbacks(retry)
+            handler.postDelayed(retry, delay)
+        }
         val pending = callbacks.toList()
         callbacks.clear()
         pending.forEach { it(entries) }
+        if (reloadNow && !cancelling) refresh()
+    }
+
+    private fun cancelQuietly() {
+        cancelling = true
+        try { connection.cancel() } finally { cancelling = false }
+    }
+
+    private companion object {
+        val RETRY_DELAYS_MS = longArrayOf(2_000L, 5_000L)
+        const val THROTTLE_MS = 500L
     }
 
     private fun sendCatalog(reply: Messenger, id: String, deadline: Long, entries: List<SelectableEntry>?) {

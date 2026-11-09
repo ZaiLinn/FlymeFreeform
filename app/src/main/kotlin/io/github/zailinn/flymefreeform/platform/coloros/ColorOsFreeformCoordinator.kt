@@ -76,13 +76,58 @@ internal class ColorOsFreeformCoordinator(
     private val appCatalog =
         ColorOsAppCatalog(context, catalogExecutor, logger) { snapshot ->
             handler.post {
-                // 后台任务完成时配置可能已再次变化，旧结果不得覆盖新外观。
-                if (snapshot.matches(lastSettings)) {
+                // 后台任务完成时配置可能已再次变化、或已切换用户，旧结果不得覆盖新外观，也不得存进新用户的副本。
+                if (snapshot.usableFor(currentUserId, lastSettings)) {
                     catalogSnapshot = snapshot
+                    storedRadial = null
                     overlay?.updateRadialAppearance(snapshot)
+                    radialStore.save(
+                        snapshot.userId,
+                        RadialSnapshotStore.Stored(RadialSnapshotStore.Key.of(snapshot.settings), snapshot.radialApps, snapshot.radialArcCounts),
+                    )
                 }
             }
         }
+
+    /** 扇形本地副本：开机后先显示，真实目录发布后整体替换。 */
+    private val radialStore = RadialSnapshotStore(logger)
+
+    /** 已读出、尚未采用的副本（读出时设置可能还没加载完）；真实目录发布后丢弃。 */
+    private var storedRadial: RadialSnapshotStore.Stored? = null
+
+    /** 当前前台用户；启动时读取，切换用户时更新。只在 handler 线程访问。 */
+    private var currentUserId = 0
+
+    /** 读出 [userId] 的扇形副本；读完时已切换到别的用户则不用。 */
+    private fun loadStoredRadial(userId: Int) {
+        radialStore.load(userId) { stored ->
+            handler.post {
+                if (userId != currentUserId) return@post
+                storedRadial = stored
+                adoptStoredRadial()
+            }
+        }
+    }
+
+    /** 目录还没发布过时，若副本与当前设置一致就先用它。 */
+    private fun adoptStoredRadial() {
+        val stored = storedRadial ?: return
+        if (catalogSnapshot.radialApps.isNotEmpty() && !catalogSnapshot.provisional) {
+            storedRadial = null
+            return
+        }
+        if (stored.key != RadialSnapshotStore.Key.of(lastSettings)) return
+        if (catalogSnapshot.provisional) return
+        catalogSnapshot = AppCatalogSnapshot(
+            radialApps = stored.entries,
+            settings = lastSettings,
+            radialArcCounts = stored.arcCounts,
+            provisional = true,
+            userId = currentUserId,
+        )
+        debug("SYSTEM_RADIAL_SNAPSHOT_ADOPTED_" + stored.entries.size)
+        overlay?.updateRadialAppearance(catalogSnapshot)
+    }
     private val entryCatalog = ColorOsEntryCatalogBroker(context, handler, logger) { entries ->
         appCatalog.updateSidebarEntries(entries, lastSettings)
     }
@@ -90,13 +135,53 @@ internal class ColorOsFreeformCoordinator(
     private val packageReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                entryCatalog.invalidate()
+                val packageName = intent?.data?.schemeSpecificPart
+                // 覆盖安装先收到带 EXTRA_REPLACING 的 REMOVED，紧接着是 ADDED / REPLACED，不算卸载。
+                val removed = intent?.action == Intent.ACTION_PACKAGE_REMOVED &&
+                    !intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+                // 侧边栏目录保留旧条目，只在启用且有侧边栏固定项时后台重读。
+                entryCatalog.packageChanged(
+                    packageName,
+                    removed,
+                    reload = lastSettings.enabled && lastSettings.allPinnedTargets.any { it is PinnedTarget.Sidebar },
+                )
                 // 只丢弃这个包的名称与图标缓存，其余应用不必重画。
-                appCatalog.invalidatePackage(intent?.data?.schemeSpecificPart)
-                if (lastSettings.enabled) {
-                    appCatalog.refresh(lastSettings)
-                    if (lastSettings.allPinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
-                }
+                appCatalog.invalidatePackage(packageName)
+                if (lastSettings.enabled) appCatalog.refresh(lastSettings)
+            }
+        }
+    /**
+     * 切换用户：旧用户的扇形、副本与侧边栏条目立即作废，先换上新用户的本地副本，目录按新的前台用户重读。
+     * 旧用户在途的加载结果带旧用户号，发布时被丢弃；侧边栏连接自己会在切换时断开重连。
+     */
+    private val userSwitchReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != SidebarProtocol.ACTION_USER_SWITCHED) return
+                currentUserId = intent.getIntExtra(EXTRA_USER_HANDLE, -1).takeIf { it >= 0 } ?: CurrentUser.id()
+                catalogSnapshot = AppCatalogSnapshot()
+                storedRadial = null
+                appCatalog.invalidateUser()
+                val sidebarPinned = lastSettings.enabled && lastSettings.allPinnedTargets.any { it is PinnedTarget.Sidebar }
+                entryCatalog.userSwitched(reload = sidebarPinned)
+                loadStoredRadial(currentUserId)
+                if (!lastSettings.enabled) return
+                appCatalog.refresh(lastSettings)
+            }
+        }
+
+    /** 前台切换时跳过了刷新（扇形全由固定项占满）：下次呼出时补一次，只为内置面板的最近顺序。 */
+    private var panelOrderStale = false
+
+    /** 切换系统语言：名称与排序按新语言重读；侧边栏条目名称由侧边栏给出，有侧边栏固定项时一并重读。 */
+    private val localeReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != Intent.ACTION_LOCALE_CHANGED) return
+                appCatalog.invalidateLabels()
+                if (!lastSettings.enabled) return
+                appCatalog.refresh(lastSettings)
+                if (lastSettings.allPinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
             }
         }
     private val pinnedTargetsReceiver =
@@ -135,6 +220,8 @@ internal class ColorOsFreeformCoordinator(
         handler.post {
             gesturePermissions.start()
             entryCatalog.start()
+            currentUserId = CurrentUser.id()
+            loadStoredRadial(currentUserId)
             environmentState.start(context)
             environmentState.observe { applySettings(configuration.snapshot) }
             environmentState.observeForeground { packageName -> handler.post { onForegroundChanged(packageName) } }
@@ -150,11 +237,20 @@ internal class ColorOsFreeformCoordinator(
 
     fun onWindowFocusChanged() { handler.post { gesturePermissions.publish() } }
 
-    /** 前台应用变了：补位不该再放正在用的应用（用小窗再开自己没有意义），让目录按新的前台重挑一次。 */
+    /**
+     * 前台应用变了：补位不该再放正在用的应用（用小窗再开自己没有意义），让目录按新的前台重挑一次。
+     * 扇形全由固定项占满时前台不影响扇形，只记下内置面板的最近顺序待更新，下次呼出时补刷一次。
+     */
     private fun onForegroundChanged(packageName: String?) {
         gesturePermissions.foregroundChanged()
         appCatalog.updateForeground(packageName)
-        if (pointerRegistered && lastSettings.enabled) appCatalog.refresh(lastSettings)
+        if (!pointerRegistered || !lastSettings.enabled) return
+        if (appCatalog.radialDependsOnForeground) {
+            panelOrderStale = false
+            appCatalog.refresh(lastSettings)
+        } else {
+            panelOrderStale = true
+        }
     }
 
     private fun registerPackageObserver() {
@@ -171,6 +267,16 @@ internal class ColorOsFreeformCoordinator(
             context.registerReceiver(packageReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } catch (exception: RuntimeException) {
             logger(Log.WARN, "PACKAGE_OBSERVER_UNAVAILABLE", exception)
+        }
+        try {
+            context.registerReceiver(localeReceiver, IntentFilter(Intent.ACTION_LOCALE_CHANGED), Context.RECEIVER_NOT_EXPORTED)
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "LOCALE_OBSERVER_UNAVAILABLE", exception)
+        }
+        try {
+            context.registerReceiver(userSwitchReceiver, IntentFilter(SidebarProtocol.ACTION_USER_SWITCHED), Context.RECEIVER_NOT_EXPORTED)
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "USER_SWITCH_OBSERVER_UNAVAILABLE", exception)
         }
     }
 
@@ -215,19 +321,24 @@ internal class ColorOsFreeformCoordinator(
                 settings.pinnedTargets != lastSettings.pinnedTargets ||
                 settings.innerArcTargets != lastSettings.innerArcTargets
         lastSettings = settings
+        // 副本与设置一致才采用；设置变化后副本作废（真实目录会按新设置重挑）。
+        if (catalogSnapshot.provisional && !catalogSnapshot.matches(settings)) catalogSnapshot = AppCatalogSnapshot()
+        adoptStoredRadial()
         gesturePermissions.publish()
         if (environmentState.isGestureAllowed(refreshKeyguard = true) && (settings.leftCornerEnabled || settings.rightCornerEnabled)) {
             val resuming = !pointerRegistered
             if ((resuming || selectionChanged) && settings.allPinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
             registerPointerListener()
-            if (resuming || selectionChanged || !catalogSnapshot.matches(settings) || catalogSnapshot.radialApps.isEmpty()) {
-                // 增减固定项只需重新挑选条目，不必重读应用列表；目录内部按条目缓存图标。
-                appCatalog.refresh(settings, reloadApps = resuming || catalogSnapshot.radialApps.isEmpty())
+            if (resuming || selectionChanged || !catalogSnapshot.matches(settings) || catalogSnapshot.radialApps.isEmpty() || catalogSnapshot.provisional) {
+                // 增减固定项、恢复手势都只需重新挑选条目，不必重读应用列表：包、语言、用户变化各有广播负责失效，
+                // 暂停期间接收器照常工作。目录为空（开机、读取失败）时才重读。
+                appCatalog.refresh(settings, reloadApps = catalogSnapshot.radialApps.isEmpty() || catalogSnapshot.provisional)
             }
         } else {
             sidebar.cancel()
             entryLaunchGeneration++
-            entryCatalog.cancel()
+            // 只是暂停（锁屏、横屏、游戏）时保留侧边栏热连接；模块关闭才解除绑定。
+            if (settings.enabled) entryCatalog.cancel() else entryCatalog.release()
             unregisterPointerListener()
             activeEnvironmentApproved = false
             activeGestureConfig = null
@@ -487,7 +598,7 @@ internal class ColorOsFreeformCoordinator(
                 "_BLACKLIST_" + lastSettings.blacklistPackages.size,
         )
         if (catalogSnapshot.radialApps.isEmpty()) {
-            // 目录尚未就绪时扇形只有「更多」一格；触发一次刷新，下次呼出恢复。
+            // 目录尚未就绪时扇形只有「更多」一格；触发一次刷新，发布后直接补进这次的扇形。
             debug("SYSTEM_CATALOG_EMPTY_REFRESH")
             appCatalog.refresh(lastSettings, reloadApps = true)
         }
@@ -497,6 +608,11 @@ internal class ColorOsFreeformCoordinator(
         var view: CornerRadialOverlayView? = null
         try {
             view = CornerRadialOverlayView(context, this, ::debug)
+            if (panelOrderStale) {
+                // 后台补刷，本次扇形不变（全是固定项），结果供之后打开的内置面板使用。
+                panelOrderStale = false
+                appCatalog.refresh(lastSettings)
+            }
             view.begin(
                 side = side,
                 catalog = catalogSnapshot,
@@ -843,6 +959,8 @@ internal class ColorOsFreeformCoordinator(
 
     private companion object {
         const val CATALOG_THREAD_NAME = "FlymeFreeform-Catalog"
+        /** Intent.EXTRA_USER_HANDLE（隐藏常量），ACTION_USER_SWITCHED 带的新用户号。 */
+        const val EXTRA_USER_HANDLE = "android.intent.extra.user_handle"
         // 窗口层级实测：APPLICATION_OVERLAY=111000，INPUT_METHOD=131000。
         // 用 APPLICATION_OVERLAY 时键盘一弹出就盖住扇形，故选输入法对话框层（141000），
         // 只压在键盘之上，仍低于状态栏等更高层系统窗口。被系统拒绝时回落到 APPLICATION_OVERLAY。

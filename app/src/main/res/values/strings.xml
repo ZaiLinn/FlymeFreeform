@@ -135,6 +135,9 @@
     <string name="remove_named_app_action">移除 %1$s</string>
     <string name="available_apps_loading">正在读取应用</string>
     <string name="available_apps_loading_summary">应用列表将在后台准备完成后显示</string>
+    <string name="available_apps_failed">应用列表读取失败</string>
+    <string name="available_apps_failed_summary">点按重试</string>
+    <string name="available_apps_empty">没有可添加的应用</string>
     <string name="search_apps_placeholder">搜索工具、快捷入口或应用</string>
     <string name="no_matching_apps">未找到匹配项</string>
     <string name="back_action">返回</string>

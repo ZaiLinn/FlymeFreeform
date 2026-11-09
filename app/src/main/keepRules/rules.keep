@@ -9,3 +9,9 @@
 -keepclassmembers class io.github.libxposed.service.XposedService {
     private io.github.libxposed.service.IXposedService mService;
 }
+
+# Compose 编译器推断不出稳定性的类（如内部类）会在调用处运行时读 `$stable`；R8 曾删掉字段而留下读取，
+# 设置页打开即 NoSuchFieldError（1.4.9）。保留本模块所有类的该字段，每类只是一个 int。
+-keepclassmembers class io.github.zailinn.flymefreeform.** {
+    public static final int $stable;
+}

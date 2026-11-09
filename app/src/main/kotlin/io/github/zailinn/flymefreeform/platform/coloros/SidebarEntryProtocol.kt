@@ -24,6 +24,10 @@ internal object SidebarEntryProtocol {
     const val COMPLETE = 11
     const val DISPATCHED = 12
     const val FAILED = 13
+    /** 系统端节流：请求过密，未处理。客户端稍后用同一 ID 重发，不必等到超时。 */
+    const val BUSY = 15
+    /** 收到 [BUSY] 后重发前等待的时间，须长于系统端节流间隔。 */
+    const val BUSY_RETRY_MS = 600L
     const val ID = "id"
     const val DEADLINE = "deadline"
     const val REPLY = "reply"

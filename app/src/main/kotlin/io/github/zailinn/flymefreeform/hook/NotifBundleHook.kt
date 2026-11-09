@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
+import io.github.zailinn.flymefreeform.hook.launch.ZoomLaunchSpec
+import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules
 import io.github.zailinn.flymefreeform.log.ModuleLog
 
 /**
@@ -18,10 +20,14 @@ import io.github.zailinn.flymefreeform.log.ModuleLog
  * 同时必须删掉 Bundle 里所有 remote + animation/transition 键。这些键让 SystemUI
  * 把本次启动的转场交给横幅那一层做，删掉后横幅不再参与转场，窗口直接起在自由窗层，
  * 因此不会被横幅压住 —— 这是「点开不被横幅盖住」的关键。
+ *
+ * 通知所属应用已在前台全屏时不改写，只写明全屏（[ZoomLaunchSpec.markFullscreen]），
+ * 横幅与转场保持系统原样，system_server 据此不再补写小窗参数。
  */
 internal class NotifBundleHook(
     private val module: XposedModule,
     private val configuration: ProcessConfiguration,
+    private val context: android.content.Context,
 ) {
     @Volatile
     private var headsUpManager: Any? = null
@@ -59,10 +65,19 @@ internal class NotifBundleHook(
         val bundle = args.getOrNull(0) as? Bundle ?: return
         val entry = args.getOrNull(1)
         val pkg = packageOf(entry)
-        if (pkg != null && pkg in SKIP_PACKAGES) return
+        // 与 system_server 其他入口共用保持全屏名单（系统界面、设置、权限控制器）。
+        if (pkg != null && pkg in LaunchRules.SKIP_TARGETS) {
+            ModuleLog.debug(TAG) { "NOTIF_BUNDLE_SKIPPED_SYSTEM " + pkg }
+            return
+        }
         // 排除列表内的应用保持系统原有启动方式。
         if (pkg != null && configuration.snapshot.isBlacklisted(pkg)) {
             ModuleLog.debug(TAG) { "NOTIF_BUNDLE_SKIPPED_EXCLUDED " + pkg }
+            return
+        }
+        if (targetInForeground(entry)) {
+            ZoomLaunchSpec.markFullscreen(bundle)
+            ModuleLog.debug(TAG) { "NOTIF_BUNDLE_FOREGROUND_FULLSCREEN " + pkg }
             return
         }
 
@@ -204,6 +219,55 @@ internal class NotifBundleHook(
         }.getOrNull()
     }
 
+    /**
+     * 通知所属应用是否正以全屏显示在前台。
+     *
+     * 所属包取 StatusBarNotification 的发布包与 contentIntent 的创建包，任一与前台全屏任务的
+     * 顶层包相同即成立。前台取 getRunningTasks 中第一个可见、窗口模式为全屏的任务：
+     * 小窗（100）、分屏等任务跳过，桌面视为普通全屏任务。查询失败按不成立处理，保持小窗。
+     */
+    private fun targetInForeground(entry: Any?): Boolean {
+        val packages = notificationPackages(entry)
+        if (packages.isEmpty()) return false
+        val foreground = runCatching { foregroundFullscreenPackage() }
+            .onFailure { module.log(Log.WARN, TAG, "NOTIF_FOREGROUND_QUERY_FAILED", it) }
+            .getOrNull()
+        val matched = foreground != null && foreground in packages
+        ModuleLog.debug(TAG) { "NOTIF_FOREGROUND " + foreground + " match=" + matched }
+        return matched
+    }
+
+    private fun notificationPackages(entry: Any?): Set<String> {
+        val sbn = runCatching { entry?.javaClass?.getMethod("getSbn")?.invoke(entry) }.getOrNull()
+            as? android.service.notification.StatusBarNotification ?: return emptySet()
+        val result = linkedSetOf(sbn.packageName)
+        sbn.notification?.contentIntent?.creatorPackage?.let(result::add)
+        return result
+    }
+
+    @Suppress("DEPRECATION")
+    private fun foregroundFullscreenPackage(): String? {
+        val manager = context.getSystemService(android.app.ActivityManager::class.java) ?: return null
+        for (task in manager.getRunningTasks(FOREGROUND_TASK_SCAN)) {
+            if (taskVisible(task) == false) continue
+            if (windowingMode(task) != ZoomLaunchSpec.WINDOWING_MODE_FULLSCREEN) continue
+            return task.topActivity?.packageName ?: task.baseActivity?.packageName
+        }
+        return null
+    }
+
+    /** TaskInfo.isVisible 为隐藏字段；读取失败返回 null，视为可见。 */
+    private fun taskVisible(task: android.app.ActivityManager.RunningTaskInfo): Boolean? =
+        runCatching { readField(task, "isVisible") as? Boolean }.getOrNull()
+
+    private fun windowingMode(task: android.app.ActivityManager.RunningTaskInfo): Int? =
+        runCatching { task.javaClass.getMethod("getWindowingMode").invoke(task) as? Int }.getOrNull()
+            ?: runCatching {
+                val configuration = readField(task, "configuration") ?: return@runCatching null
+                val window = readField(configuration, "windowConfiguration") ?: return@runCatching null
+                window.javaClass.getMethod("getWindowingMode").invoke(window) as? Int
+            }.getOrNull()
+
     /** 返回被删掉的键，便于在日志里确认转场确实被剥掉。 */
     private fun dropRemoteTransition(bundle: Bundle): String {
         val keys = runCatching { bundle.keySet().toTypedArray() }.getOrDefault(emptyArray())
@@ -237,7 +301,8 @@ internal class NotifBundleHook(
         const val KEY_LAUNCH_SCENARIO = "androidx.activity.LaunchScenario"
         const val KEY_WINDOWING_MODE = "android:activity.windowingMode"
         const val VALUE_FREEFORM = 100
-        val SKIP_PACKAGES = setOf("com.android.systemui", "android")
+        /** 前台判定扫描的任务数：顶部可能先是小窗或分屏任务。 */
+        const val FOREGROUND_TASK_SCAN = 6
         val CANDIDATES = listOf(
             "com.oplus.systemui.statusbar.phone.OplusStatusBarNotificationActivityStarterExImpl",
             "com.android.systemui.statusbar.phone.OplusStatusBarNotificationActivityStarterExImpl",

@@ -42,7 +42,14 @@ internal object FavoriteGroupInjector {
      */
     private const val RECENT_WINDOW_MS = 24L * 60 * 60 * 1000
     private const val PREPARE_TTL_MS = 15_000L
-    private val XML = File("/data/user/0/com.coloros.smartsidebar/files/edge_panel/coloros_ep_entry_user.xml")
+    /**
+     * 侧边栏的用户设置 XML，在侧边栏所属用户的凭据加密区。非 0 号用户（系统分身等）的数据在
+     * /data/user/<用户>/，不能写死 0 号用户。按本进程 uid 取用户号拼路径，0 号用户的路径与原先一致
+     * （不用 filesDir：侧边栏 directBootAware，换成设备加密区上下文时路径会变）。
+     */
+    private val XML: File by lazy {
+        File("/data/user/" + (android.os.Process.myUid() / 100_000) + "/com.coloros.smartsidebar/files/edge_panel/coloros_ep_entry_user.xml")
+    }
 
     private val cache = java.util.WeakHashMap<List<*>, List<*>>()
 

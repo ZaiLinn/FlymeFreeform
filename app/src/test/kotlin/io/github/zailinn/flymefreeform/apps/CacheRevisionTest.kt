@@ -7,6 +7,31 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CacheRevisionTest {
+    @Test fun queuedOldCallbackIsRejectedAfterCacheInvalidation() {
+        val gate = CacheRevision()
+        val requested = gate.current()
+        val cache = mutableMapOf<String, String>()
+        assertTrue(gate.commit(requested) { cache["app"] = "old" })
+        var displayed: String? = null
+        val callback = { if (gate.isCurrent(requested)) displayed = "old" }
+        gate.invalidate { cache.clear() }
+        callback()
+        assertNull(displayed)
+        assertTrue(cache.isEmpty())
+        val next = gate.current()
+        assertTrue(gate.commit(next) { cache["app"] = "new" })
+        assertEquals("new", cache["app"])
+    }
+
+    @Test fun invalidationBetweenRenderingAndCommitRejectsOldIcon() {
+        val gate = CacheRevision()
+        val requested = gate.current()
+        val cache = mutableMapOf("other" to "unchanged")
+        gate.invalidate { cache.remove("app") }
+        assertFalse(gate.commit(requested) { cache["app"] = "stale" })
+        assertEquals(mapOf("other" to "unchanged"), cache)
+    }
+
     @Test fun renderingStartedBeforeInvalidationCannotRepopulateCache() {
         val gate = CacheRevision()
         val cache = mutableMapOf<String, String>()

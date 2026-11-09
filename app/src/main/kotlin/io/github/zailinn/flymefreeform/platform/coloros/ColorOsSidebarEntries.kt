@@ -19,37 +19,37 @@ import io.github.zailinn.flymefreeform.config.PinnedTargetCodec
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 
-/** 侧边栏目录及执行适配；不保存原生条目，不自行初始化厂商数据所有者。 */
+/**
+ * 侧边栏目录及执行适配；不保存原生条目，不自行初始化厂商数据所有者。
+ * 每次请求新建一个实例（[resolvedBeans] 只在本次请求内有效），反射查到的类与方法按 ClassLoader 复用。
+ */
 internal class ColorOsSidebarEntries(private val context: Context, loader: ClassLoader) {
-    private val helperClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.EntryBeanHelper")
-    private val active = helperClass.getMethod("getActiveInstance")
-    private val tools = helperClass.getMethod("getAllAppListForTool")
-    private val apps = helperClass.getMethod("getShownShortcuts")
-    private val shownApps = helperClass.getMethod("getShownApps")
-    private val beanClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.models.beans.EntryBean")
-    private val type = beanClass.getMethod("getType")
-    private val category = beanClass.getMethod("getCategory")
-    private val alias = beanClass.getMethod("getAlias")
-    private val label = beanClass.getMethod("getLabel")
-    private val pkg = beanClass.getMethod("getPkg")
-    private val activity = beanClass.getMethod("getActivity")
-    private val cloned = beanClass.getMethod("isCloned")
-    private val cloneUserId = beanClass.getMethod("getMutiUserId")
-    private val hidden = beanClass.getMethod("isHidden")
-    private val iconRes = beanClass.getMethod("getIconRes")
-    private val routeClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.utils.PageRoutUtils")
-    private val launchTool = routeClass.getMethod("startSysTool", beanClass)
-    private val launchShortcut = routeClass.getMethod("startShortcut", beanClass)
-    private val launchApp = routeClass.getMethod("startNormalApp", beanClass)
-    private val shortcutClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.ShortcutEntryHelper")
-    private val shortcuts = shortcutClass.getMethod("getActiveInstance")
-    private val shortcut = shortcutClass.getMethod("getShortcut", String::class.java)
-    private val shortcutIcon = shortcut.returnType.getMethod("getIcon")
-    private val handlerClass = loader.loadClass(ColorOsAllAppsContent.HANDLER_CLASS)
-    private val handler = handlerClass.getField("INSTANCE").get(null)
-    private val getMain = handlerClass.getMethod("getMPanelMainView")
-    private val getResident = handlerClass.getMethod("getMResidentProcessHandler")
-    private val getState = getMain.returnType.getMethod("getMState")
+    private val meta = Meta.of(loader)
+    private val active = meta.active
+    private val tools = meta.tools
+    private val apps = meta.apps
+    private val shownApps = meta.shownApps
+    private val beanClass = meta.beanClass
+    private val type = meta.type
+    private val category = meta.category
+    private val alias = meta.alias
+    private val label = meta.label
+    private val pkg = meta.pkg
+    private val activity = meta.activity
+    private val cloned = meta.cloned
+    private val cloneUserId = meta.cloneUserId
+    private val hidden = meta.hidden
+    private val iconRes = meta.iconRes
+    private val launchTool = meta.launchTool
+    private val launchShortcut = meta.launchShortcut
+    private val launchApp = meta.launchApp
+    private val shortcuts = meta.shortcuts
+    private val shortcut = meta.shortcut
+    private val shortcutIcon = meta.shortcutIcon
+    private val handler = meta.handler
+    private val getMain = meta.getMain
+    private val getResident = meta.getResident
+    private val getState = meta.getState
 
     fun ready(): Boolean = active.call(null) != null && getMain.call(handler) != null &&
         (getResident.call(handler) as? IInterface)?.asBinder()?.isBinderAlive == true
@@ -60,7 +60,7 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
     private val resolvedBeans = java.util.concurrent.ConcurrentHashMap<PinnedTarget.Sidebar, Any>()
 
     /** 与原生全部面板一致，在工作线程获取目录；图标压到固定上限后才跨进程传输。 */
-    fun load(userId: Int): List<SelectableEntry> = entries(includeClones = true).mapNotNull { bean ->
+    fun load(userId: Int): List<SelectableEntry> = entries(includeClones = true, userId).mapNotNull { bean ->
         val target = target(bean, userId) ?: return@mapNotNull null
         resolvedBeans[target] = bean
         val packageName = pkg.call(bean) as? String ?: ""
@@ -83,12 +83,14 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
     /** 目录查询在工作线程完成；主线程只校验已解析条目并调用原生路由。 */
     fun resolve(target: PinnedTarget.Sidebar): Any? =
         resolvedBeans[target]?.takeIf { beanClass.isInstance(it) }
-            ?: entries(includeClones = target.kind == PinnedTarget.Kind.CloneApp)
+            ?: entries(includeClones = target.kind == PinnedTarget.Kind.CloneApp, target.userId)
                 .firstOrNull { target(it, target.userId) == target }
                 ?.also { resolvedBeans[target] = it }
 
     fun launch(target: PinnedTarget.Sidebar, current: Any): Boolean {
         if (!beanClass.isInstance(current) || target(current, target.userId) != target) return false
+        // startNormalApp 以 bean 的 getMutiUserId 启动（16.11.3 / 17.11.2 字节码核对），
+        // isCloned 只影响 activity 为空时补组件的查询用户，侧边栏误报分身不会打开本体。
         when (target.kind) {
             PinnedTarget.Kind.Tool -> launchTool
             PinnedTarget.Kind.Shortcut -> launchShortcut
@@ -97,11 +99,12 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
         return true
     }
 
-    private fun entries(includeClones: Boolean): List<Any> {
+    private fun entries(includeClones: Boolean, userId: Int): List<Any> {
         val owner = active.call(null) ?: throw IllegalStateException("SIDEBAR_ENTRIES_NOT_READY")
+        // 分身判断交给 target()：不只看侧边栏的 isCloned，见 SidebarEntryKind.fromNative。
         val result = (tools.call(owner) as? List<*>).orEmpty() + (apps.call(owner) as? List<*>).orEmpty() +
             if (includeClones) (shownApps.call(owner) as? List<*>).orEmpty().filter { bean ->
-                bean != null && beanClass.isInstance(bean) && cloned.call(bean) == true
+                bean != null && beanClass.isInstance(bean) && target(bean, userId)?.kind == PinnedTarget.Kind.CloneApp
             } else emptyList()
         return result.filterNotNull().filter(beanClass::isInstance)
     }
@@ -111,7 +114,7 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
         val kind = SidebarEntryKind.fromNative(
             type = type.call(bean) as? Int ?: return null,
             category = category.call(bean) as? Int ?: return null,
-            isCloned = cloned.call(bean) == true,
+            nativeCloned = cloned.call(bean) == true,
             entryUserId = cloneUserId.call(bean) as? Int ?: return null,
             ownerUserId = userId,
         ) ?: return null
@@ -195,14 +198,21 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
             draw(Canvas(it))
         }
 
+    /**
+     * 核对分身用户下确有该包的启动入口；查不到即视为不是分身（或分身已卸载），条目不进目录。
+     * 记录的 activity 与现有入口不符（应用更新后改了入口）时，与侧边栏自身的
+     * findLauncherActivityInfo 一致，退回该用户下该包的第一个入口，只用于标签、图标和角标。
+     */
     private fun clonedActivityInfo(bean: Any, packageName: String): LauncherActivityInfo? {
         val userId = cloneUserId.call(bean) as? Int ?: return null
-        val activityName = activity.call(bean) as? String ?: return null
-        if (userId !in 1..21_474) return null
+        val activityName = activity.call(bean) as? String
+        if (userId !in 1..21_474 || packageName.isEmpty()) return null
         return try {
-            context.getSystemService(LauncherApps::class.java)
+            val list = context.getSystemService(LauncherApps::class.java)
                 ?.getActivityList(packageName, UserHandle.getUserHandleForUid(userId * 100_000))
-                ?.firstOrNull { it.componentName == ComponentName(packageName, activityName) }
+                .orEmpty()
+            activityName?.let { name -> list.firstOrNull { it.componentName == ComponentName(packageName, name) } }
+                ?: list.firstOrNull()
         } catch (_: RuntimeException) {
             null
         }
@@ -214,5 +224,45 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
         val cause = exception.cause
         if (cause is Error) throw cause
         throw exception
+    }
+
+    /** 反射元数据：只有类、方法与 Kotlin object 单例，不含任何原生条目；侧边栏进程只有一个 ClassLoader，单格缓存即可。 */
+    private class Meta(val loader: ClassLoader) {
+        val helperClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.EntryBeanHelper")
+        val active = helperClass.getMethod("getActiveInstance")
+        val tools = helperClass.getMethod("getAllAppListForTool")
+        val apps = helperClass.getMethod("getShownShortcuts")
+        val shownApps = helperClass.getMethod("getShownApps")
+        val beanClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.models.beans.EntryBean")
+        val type = beanClass.getMethod("getType")
+        val category = beanClass.getMethod("getCategory")
+        val alias = beanClass.getMethod("getAlias")
+        val label = beanClass.getMethod("getLabel")
+        val pkg = beanClass.getMethod("getPkg")
+        val activity = beanClass.getMethod("getActivity")
+        val cloned = beanClass.getMethod("isCloned")
+        val cloneUserId = beanClass.getMethod("getMutiUserId")
+        val hidden = beanClass.getMethod("isHidden")
+        val iconRes = beanClass.getMethod("getIconRes")
+        val routeClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.utils.PageRoutUtils")
+        val launchTool = routeClass.getMethod("startSysTool", beanClass)
+        val launchShortcut = routeClass.getMethod("startShortcut", beanClass)
+        val launchApp = routeClass.getMethod("startNormalApp", beanClass)
+        val shortcutClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.ShortcutEntryHelper")
+        val shortcuts = shortcutClass.getMethod("getActiveInstance")
+        val shortcut = shortcutClass.getMethod("getShortcut", String::class.java)
+        val shortcutIcon = shortcut.returnType.getMethod("getIcon")
+        val handlerClass = loader.loadClass(ColorOsAllAppsContent.HANDLER_CLASS)
+        val handler = handlerClass.getField("INSTANCE").get(null)
+        val getMain = handlerClass.getMethod("getMPanelMainView")
+        val getResident = handlerClass.getMethod("getMResidentProcessHandler")
+        val getState = getMain.returnType.getMethod("getMState")
+
+        companion object {
+            @Volatile private var cached: Meta? = null
+
+            fun of(loader: ClassLoader): Meta =
+                cached?.takeIf { it.loader === loader } ?: Meta(loader).also { cached = it }
+        }
     }
 }

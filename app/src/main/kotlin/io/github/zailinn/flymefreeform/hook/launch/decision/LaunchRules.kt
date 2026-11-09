@@ -2,6 +2,9 @@ package io.github.zailinn.flymefreeform.hook.launch.decision
 
 /** 逐项保留旧启动注入器的动作、包名与时间窗常量。 */
 internal object LaunchRules {
+    /** UserHandle.PER_USER_RANGE：uid = 用户号 × 它 + appId。 */
+    const val PER_USER_RANGE = 100_000
+
     const val ACTION_MAIN = "android.intent.action.MAIN"
     const val ACTION_VIEW = "android.intent.action.VIEW"
     const val FLAG_ACTIVITY_NEW_TASK = 0x10000000

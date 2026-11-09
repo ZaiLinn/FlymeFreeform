@@ -145,6 +145,14 @@ internal class ColorOsSidebarEntryConnection(
         current?.let(::finish)
     }
 
+    /**
+     * 模块关闭时调用：结束当前请求并解除绑定。使用期间（含锁屏、横屏等暂停）保留热连接，
+     * 省掉再次唤醒 provider 与 bindService；关闭后不再维持对侧边栏服务的绑定。
+     */
+    fun release() {
+        dropLink(unbind = true)
+    }
+
     private fun prepareAndBind(request: Request) {
         if (preparing != null) return
         preparing = request
@@ -184,6 +192,7 @@ internal class ColorOsSidebarEntryConnection(
                 .acquireUnstableContentProviderClient(ColorOsSidebarTarget.PROVIDER_AUTHORITY)
                 ?: throw IllegalStateException("SIDEBAR_ENTRY_PROVIDER_UNAVAILABLE")
             provider.use { it.call(ColorOsSidebarTarget.PREPARE_METHOD, null, null) }
+            request.preparedAt = SystemClock.uptimeMillis()
             if (!request.active.get()) return@work
             handler.post {
                 if (current !== request) return@post
@@ -193,7 +202,12 @@ internal class ColorOsSidebarEntryConnection(
                     send(request, warm)
                     return@post
                 }
-                pendingAfterBind = { if (current === request) link?.let { send(request, it) } }
+                pendingAfterBind = {
+                    if (current === request) {
+                        request.boundAt = SystemClock.uptimeMillis()
+                        link?.let { send(request, it) }
+                    }
+                }
                 if (!binding) {
                     val intent = Intent(SidebarEntryProtocol.BIND_ACTION).setComponent(COMPONENT)
                     val connection = connection(userContext, userId, uid)
@@ -252,6 +266,7 @@ internal class ColorOsSidebarEntryConnection(
                 }
                 SidebarEntryProtocol.ITEM -> {
                     if (request.target != null) { finish(request); return true }
+                    if (request.firstItemAt == 0L) request.firstItemAt = SystemClock.uptimeMillis()
                     val entry = SidebarEntryProtocol.readEntry(data, request.userId)
                     if (entry == null || !request.transfer.append(data.getInt(SidebarEntryProtocol.INDEX, -1), entry)) finish(request)
                 }
@@ -272,6 +287,9 @@ internal class ColorOsSidebarEntryConnection(
         request.active.set(false)
         request.transfer.cancel()
         handler.removeCallbacks(request.timeout)
+        if (request.target == null && entries != null) {
+            log(Log.INFO, "SIDEBAR_ENTRY_LIST_READY_" + request.phases() + "_n" + entries.size, null)
+        }
         // 连接保持常驻：只让对端清掉它自己的会话，不断开绑定。
         val remote = link?.remote
         if (remote != null) {
@@ -339,7 +357,20 @@ internal class ColorOsSidebarEntryConnection(
         val onResult: (List<SelectableEntry>?, Boolean) -> Unit,
     ) {
         val id = UUID.randomUUID().toString()
-        val deadline = SystemClock.uptimeMillis() + SidebarEntryProtocol.TIMEOUT_MS
+        val createdAt = SystemClock.uptimeMillis()
+        val deadline = createdAt + SidebarEntryProtocol.TIMEOUT_MS
+        /** 冷路径（需唤醒侧边栏并绑定）还是复用常驻连接。 */
+        val cold = link == null
+        @Volatile var preparedAt = 0L
+        @Volatile var boundAt = 0L
+        @Volatile var firstItemAt = 0L
+
+        /** 各阶段相对发起时刻的耗时，未到达的阶段记 -1。 */
+        fun phases(): String {
+            fun since(at: Long) = if (at == 0L) -1L else at - createdAt
+            return "cold" + (if (cold) 1 else 0) + "_prepare" + since(preparedAt) + "_bind" + since(boundAt) +
+                "_first" + since(firstItemAt) + "_total" + (SystemClock.uptimeMillis() - createdAt)
+        }
         val active = AtomicBoolean(true)
         @Volatile var userId = -1
         @Volatile var uid = -1
@@ -348,7 +379,7 @@ internal class ColorOsSidebarEntryConnection(
         var confirmed = false
         val transfer = CatalogTransfer(SidebarEntryProtocol.MAX_ENTRIES, SelectableEntry::target)
         val timeout = Runnable {
-            log(Log.WARN, "SIDEBAR_ENTRY_TIMEOUT_" + (if (target == null) "LIST" else "LAUNCH"), null)
+            log(Log.WARN, "SIDEBAR_ENTRY_TIMEOUT_" + (if (target == null) "LIST" else "LAUNCH") + "_" + phases(), null)
             // 绑定已发起但连接还没回来：这次请求等不到结果了，先把绑定作废，
             // 下一次请求才会重新 bindService；否则会一直等一个不会再触发回调的旧绑定。
             val orphaned = link == null && binding

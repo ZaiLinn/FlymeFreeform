@@ -124,8 +124,9 @@ internal class ActivityStarterZoomInjector(
             ?: request?.let { readField(it, "intent") } as? Intent ?: return null
         val rawUid = intField(starter, "mCallingUid")
         val uid = rawUid.takeIf { it > 0 } ?: request?.let { intField(it, "callingUid") } ?: 0
-        val resolved = (request?.let { readField(it, "resolveInfo") } as? android.content.pm.ResolveInfo)?.activityInfo?.packageName
-            ?: (request?.let { readField(it, "activityInfo") } as? android.content.pm.ActivityInfo)?.packageName
+        val activity = (request?.let { readField(it, "resolveInfo") } as? android.content.pm.ResolveInfo)?.activityInfo
+            ?: request?.let { readField(it, "activityInfo") } as? android.content.pm.ActivityInfo
+        val resolved = activity?.packageName
         val options = optionsBundle(starter, request)
         val snapshot = LaunchSnapshot(
             stage = stage, action = intent.action, dataString = intent.dataString, flags = intent.flags,
@@ -142,8 +143,12 @@ internal class ActivityStarterZoomInjector(
             zoomSourceExtra = intent.getIntExtra(ZoomLaunchSpec.EXTRA_SOURCE, 0),
             zoomAppliedExtra = intent.getIntExtra(ZoomLaunchSpec.EXTRA_APPLIED, 0) == 1,
             quickSettingsExtra = intent.getBooleanExtra(LaunchRules.EXTRA_QUICK_SETTINGS, false),
-            optionsAlreadyZoom = ZoomLaunchSpec.alreadyZoom(options), preempting = preempting.get() == true,
+            optionsAlreadyZoom = ZoomLaunchSpec.alreadyZoom(options),
+            optionsFullscreen = ZoomLaunchSpec.explicitFullscreen(options), preempting = preempting.get() == true,
         )
+        // 先用本次启动自带的信息补缓存，再做判定：目标的 ApplicationInfo 已由系统解析好，
+        // 发起方的包名与 uid 已由系统核实；均为字段读取，不调用系统服务。
+        queries.seedFromLaunch(activity?.applicationInfo, snapshot.callingPackage, snapshot.callingUid, snapshot.realCallingUid)
         return StarterInput(starter, request, intent, options, snapshot,
             request?.let { readField(it, "userId") as? Int } ?: -1)
     }
@@ -197,7 +202,7 @@ internal class ActivityStarterZoomInjector(
                             effects.isUserVisible(input.userId) },
                         start = { zoom ->
                             preempting.set(true)
-                            try { replay.start(if (zoom) ZoomLaunchSpec.bundle(input.options) else null) }
+                            try { replay.start(if (zoom) ZoomLaunchSpec.bundle(null) else null) }
                             finally { preempting.remove() }
                         },
                         current = { pendingReopens.current(key, ticket) },
@@ -245,10 +250,15 @@ internal class ActivityStarterZoomInjector(
             ModuleLog.debug(TAG) { "ZOOM_NATIVE_CHANNEL_" + reason }
             return
         }
-        val bundle = ZoomLaunchSpec.bundle(input.options)
-        val applied = runCatching { callSetActivityOptions(input.starter, bundle, input.snapshot.callingPid, input.snapshot.callingUid) }
+        // 只写小窗参数，不并入原参数：原参数可能带桌面 / SystemUI 的远程动画、launchTaskId 等受限字段，
+        // 以 callingUid 重新包装会在 SafeActivityOptions 权限检查处抛 SecurityException，启动失败。
+        // 读出原参数仅用于判定（alreadyZoom / 写明全屏），与设备上一直运行的写入行为保持一致。
+        val bundle = ZoomLaunchSpec.bundle(null)
+        val pid = input.snapshot.callingPid
+        val uid = input.snapshot.callingUid
+        val applied = runCatching { callSetActivityOptions(input.starter, bundle, pid, uid) }
             .getOrDefault(false)
-        if (!applied) runCatching { writeOptions(input.starter, bundle) }
+        if (!applied) runCatching { writeRequestOptions(input.starter, input.request, bundle, pid, uid) }
             .onFailure { module.log(Log.WARN, TAG, "ZOOM_OPTIONS_WRITE_FAILED", it) }
         ModuleLog.debug(TAG) { "ZOOM_INJECTED_" + reason }
         if (decision.markSelfRelaunch && decision.selfTarget != null) memory.markZoomed(decision.selfTarget, true, now())
@@ -320,17 +330,34 @@ internal class ActivityStarterZoomInjector(
             putInt("start_zoom_at_other_side", LAUNCH_AT_RIGHT)
         }
 
+    /**
+     * 读出本次启动的原参数，仅供判定。
+     *
+     * 钩子触发时 starter.mOptions 尚未赋值（AOSP 在 executeRequest 内部的 setInitialState 才写入），
+     * 实际来源是 Request.activityOptions，类型为 SafeActivityOptions，自身没有 toBundle。
+     * 按 AOSP SafeActivityOptions.mergeActivityOptions 的做法合并：原参数（mOriginalOptions）在前，
+     * PendingIntent 发送方的参数（mCallerOptions，如 SystemUI 点通知时写的参数）覆盖在后。
+     */
     private fun optionsBundle(starter: Any, request: Any?): Bundle? {
         val options =
             readField(starter, "mOptions")
                 ?: request?.let { readField(it, "activityOptions") }
                 ?: return null
-        return runCatching {
-            val toBundle = options.javaClass.getMethod("toBundle")
-            toBundle.isAccessible = true
-            toBundle.invoke(options) as? Bundle
-        }.getOrNull()
+        toBundle(options)?.let { return it }
+        val original = readField(options, "mOriginalOptions")?.let(::toBundle)
+        val caller = readField(options, "mCallerOptions")?.let(::toBundle)
+        if (original == null && caller == null) return null
+        return Bundle().apply {
+            original?.let(::putAll)
+            caller?.let(::putAll)
+        }
     }
+
+    private fun toBundle(options: Any): Bundle? = runCatching {
+        val method = options.javaClass.getMethod("toBundle")
+        method.isAccessible = true
+        method.invoke(options) as? Bundle
+    }.getOrNull()
 
     private fun callSetActivityOptions(
         starter: Any,
@@ -349,50 +376,63 @@ internal class ActivityStarterZoomInjector(
         return true
     }
 
-    /** setActivityOptions 不可用时，将 ActivityOptions 直接写回 ActivityStarter。 */
-    private fun writeOptions(starter: Any, bundle: Bundle) {
+    /**
+     * setActivityOptions 不可用时，以调用方身份构造 SafeActivityOptions 直接写入 Request.activityOptions。
+     * 不写 starter.mOptions：该字段在 executeRequest 内会被 Request 中的参数重新赋值，写了也不生效。
+     * 与 [StarterRequestReplay] 的回退写法一致。
+     */
+    private fun writeRequestOptions(starter: Any, request: Any?, bundle: Bundle, pid: Int, uid: Int) {
+        requireNotNull(request) { "request unavailable" }
         val fromBundle =
-            Class.forName("android.app.ActivityOptions").getMethod("fromBundle", Bundle::class.java)
+            Class.forName("com.android.server.wm.SafeActivityOptions", false, starter.javaClass.classLoader)
+                .getDeclaredMethod("fromBundle", Bundle::class.java, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
         fromBundle.isAccessible = true
-        val options = fromBundle.invoke(null, bundle)
-        var current: Class<*>? = starter.javaClass
+        val options = fromBundle.invoke(null, bundle, pid, uid)
+        var current: Class<*>? = request.javaClass
         while (current != null) {
             try {
-                val field = current.getDeclaredField("mOptions")
+                val field = current.getDeclaredField("activityOptions")
                 field.isAccessible = true
-                field.set(starter, options)
+                field.set(request, options)
                 return
             } catch (exception: NoSuchFieldException) {
                 current = current.superclass
             }
         }
+        throw NoSuchFieldException("activityOptions")
     }
 
-    private fun readField(instance: Any, name: String): Any? {
-        var current: Class<*>? = instance.javaClass
-        while (current != null) {
-            try {
-                return current.getDeclaredField(name).also { it.isAccessible = true }.get(instance)
-            } catch (exception: NoSuchFieldException) {
-                current = current.superclass
+    private fun readField(instance: Any, name: String): Any? = fieldOf(instance.javaClass, name)?.get(instance)
+
+    private fun intField(instance: Any, name: String): Int = fieldOf(instance.javaClass, name)?.getInt(instance) ?: 0
+
+    /**
+     * 按「类 + 字段名」缓存沿继承链找到的字段，找不到也记下（[FieldSlot.field] 为 null）：
+     * 每次启动要读十几个字段、可能经过两层钩子各读两次快照，逐次 getDeclaredField 并抛 NoSuchFieldException 很贵。
+     * 只缓存反射元数据，不缓存任何字段值；类随 system_server 常驻，不会卸载。
+     */
+    private fun fieldOf(type: Class<*>, name: String): java.lang.reflect.Field? {
+        val key = FieldKey(type, name)
+        fields[key]?.let { return it.field }
+        var current: Class<*>? = type
+        var found: java.lang.reflect.Field? = null
+        while (current != null && found == null) {
+            found = try {
+                current.getDeclaredField(name).also { it.isAccessible = true }
+            } catch (_: NoSuchFieldException) {
+                null
             }
+            current = current.superclass
         }
-        return null
+        fields[key] = FieldSlot(found)
+        return found
     }
 
-    private fun intField(instance: Any, name: String): Int {
-        var current: Class<*>? = instance.javaClass
-        while (current != null) {
-            try {
-                val field = current.getDeclaredField(name)
-                field.isAccessible = true
-                return field.getInt(instance)
-            } catch (exception: NoSuchFieldException) {
-                current = current.superclass
-            }
-        }
-        return 0
-    }
+    private data class FieldKey(val type: Class<*>, val name: String)
+
+    private class FieldSlot(val field: java.lang.reflect.Field?)
+
+    private val fields = java.util.concurrent.ConcurrentHashMap<FieldKey, FieldSlot>()
 
     private companion object { const val TAG = "FlymeFreeform" }
 }

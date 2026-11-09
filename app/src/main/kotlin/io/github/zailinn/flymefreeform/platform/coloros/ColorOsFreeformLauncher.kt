@@ -30,12 +30,15 @@ internal class ColorOsFreeformLauncher(
     }
 
     fun launch(requested: ComponentName, atLeft: Boolean = true): FreeformLaunchResult {
+        // 目录与启动都按当前前台用户（system_server 自身是 0 号用户）。
+        val userId = CurrentUser.id()
+        val userContext = CurrentUser.context(context, userId)
         var component = requested
-        var reason = unavailableReason(component)
+        var reason = unavailableReason(userContext, component)
         if (reason != null) {
             // 图标包类应用（Telegram 系常见）把启动 Activity 做成多个 activity-alias，
             // 未启用的别名会在清单里 disabled；此时改用它当前的启动入口。
-            val fallback = enabledLauncherComponent(requested.packageName, requested)
+            val fallback = enabledLauncherComponent(userContext, userId, requested.packageName, requested)
             if (fallback != null) {
                 component = fallback
                 reason = null
@@ -61,13 +64,14 @@ internal class ColorOsFreeformLauncher(
                 }
         val options = createLaunchOptions(atLeft)
 
-        if (startAsZoomWindow(intent, options)) {
+        if (startAsZoomWindow(intent, options, userId)) {
             debug("SYSTEM_LAUNCH_ZOOM_OK_" + requested.packageName)
             return FreeformLaunchResult.Started
         }
         debug("SYSTEM_LAUNCH_ZOOM_FALLBACK_" + requested.packageName)
         return try {
-            context.startActivity(intent, options)
+            // 用户上下文发起的 startActivity 按该用户启动。
+            userContext.startActivity(intent, options)
             FreeformLaunchResult.Started
         } catch (exception: SecurityException) {
             FreeformLaunchResult.Failed("FREEFORM_LAUNCH_SECURITY_REJECTED", exception)
@@ -83,10 +87,15 @@ internal class ColorOsFreeformLauncher(
      * 未启用的别名在清单里是 disabled，直接按记录的别名启动会失败。
      * 顺序：系统解析的启动入口 → LauncherApps 里该包当前可启动的入口。
      */
-    private fun enabledLauncherComponent(packageName: String, requested: ComponentName): ComponentName? {
+    private fun enabledLauncherComponent(
+        userContext: Context,
+        userId: Int,
+        packageName: String,
+        requested: ComponentName,
+    ): ComponentName? {
         try {
-            context.packageManager.getLaunchIntentForPackage(packageName)?.component?.let { resolved ->
-                if (resolved != requested && unavailableReason(resolved) == null) return resolved
+            userContext.packageManager.getLaunchIntentForPackage(packageName)?.component?.let { resolved ->
+                if (resolved != requested && unavailableReason(userContext, resolved) == null) return resolved
             }
         } catch (_: RuntimeException) {
             // 继续走枚举兜底。
@@ -95,19 +104,19 @@ internal class ColorOsFreeformLauncher(
         val launcherApps = context.getSystemService(android.content.pm.LauncherApps::class.java) ?: return null
         return try {
             launcherApps
-                .getActivityList(packageName, android.os.Process.myUserHandle())
+                .getActivityList(packageName, CurrentUser.handle(userId))
                 .firstOrNull { it.componentName != requested }
                 ?.componentName
-                ?.takeIf { unavailableReason(it) == null }
+                ?.takeIf { unavailableReason(userContext, it) == null }
         } catch (_: RuntimeException) {
             null
         }
     }
 
     /** 目标不可用的具体原因；null 表示可用。 */
-    private fun unavailableReason(component: ComponentName): String? =
+    private fun unavailableReason(userContext: Context, component: ComponentName): String? =
         try {
-            val info = context.packageManager
+            val info = userContext.packageManager
                 .getActivityInfo(component, PackageManager.ComponentInfoFlags.of(0))
             // 不再要求 exported：本模块在 system_server（uid 1000）内启动，
             // 具备 START_ANY_ACTIVITY，系统应用把启动 Activity 标成 exported=false 也能拉起；
@@ -140,7 +149,7 @@ internal class ColorOsFreeformLauncher(
 
     /** 走厂商 zoom 入口；不可用或返回失败码时回落到普通启动。 */
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun startAsZoomWindow(intent: Intent, options: Bundle): Boolean =
+    private fun startAsZoomWindow(intent: Intent, options: Bundle, userId: Int): Boolean =
         try {
             val managerClass = Class.forName(ZOOM_MANAGER_CLASS)
             val instance = managerClass.getMethod("getInstance").invoke(null) ?: return false
@@ -151,7 +160,7 @@ internal class ColorOsFreeformLauncher(
                 Int::class.javaPrimitiveType,
                 String::class.java,
             )
-            val result = start.invoke(instance, intent, options, currentUserId(), context.packageName) as? Int
+            val result = start.invoke(instance, intent, options, userId, context.packageName) as? Int
             result != null && result >= 0
         } catch (_: ReflectiveOperationException) {
             false
@@ -159,16 +168,6 @@ internal class ColorOsFreeformLauncher(
             false
         } catch (_: LinkageError) {
             false
-        }
-
-    /** `UserHandle.myUserId` 不在公开 SDK，交给反射取；取不到就按 0 号用户。 */
-    private fun currentUserId(): Int =
-        try {
-            (Class.forName("android.os.UserHandle").getMethod("myUserId").invoke(null) as? Int) ?: 0
-        } catch (_: ReflectiveOperationException) {
-            0
-        } catch (_: RuntimeException) {
-            0
         }
 
     /** 隐藏 setter 只是补强；ColorOS 的两个 Bundle 参数才是不可缺少的启动协议。 */

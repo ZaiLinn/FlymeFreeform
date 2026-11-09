@@ -113,14 +113,7 @@ internal class SidebarHookInstaller(private val module: XposedModule, private va
             // 小窗参数必须在这一步并入，理由见 PanelToolLaunchBridge 的说明。
             // 厂商版本缺少该入口时只跳过本功能，面板接管不受影响。
             runCatching {
-                val platform = loader.loadClass(APP_PLATFORM_UTILS_CLASS)
-                val startActivityAsUser =
-                    platform.getDeclaredMethod(
-                        "n",
-                        Intent::class.java,
-                        Bundle::class.java,
-                        android.os.UserHandle::class.java,
-                    )
+                val startActivityAsUser = toolLaunchMethod(loader.loadClass(APP_PLATFORM_UTILS_CLASS))
                 handles +=
                     module.hook(startActivityAsUser).setId("flymefreeform.panel.tool_zoom")
                         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
@@ -129,7 +122,8 @@ internal class SidebarHookInstaller(private val module: XposedModule, private va
                             }
                             chain.proceed()
                         }
-                log(Log.INFO, "PANEL_TOOL_ZOOM_INSTALLED", null)
+                log(Log.INFO, "PANEL_TOOL_ZOOM_INSTALLED_" + startActivityAsUser.name + "_" +
+                    startActivityAsUser.parameterCount, null)
             }.onFailure { log(Log.WARN, "PANEL_TOOL_ZOOM_UNAVAILABLE", it) }
             resolveVisualTarget(loader, applicationInfo)
         } catch (exception: ReflectiveOperationException) {
@@ -252,6 +246,11 @@ internal class SidebarHookInstaller(private val module: XposedModule, private va
         if (intent == null || options == null) return
         if (!configuration.snapshot.enabled || !configuration.snapshot.zoomLaunch) return
         val target = intent.component?.packageName ?: intent.getPackage() ?: return
+        // 与其他入口一致：排除列表内的应用保持系统原有启动方式。
+        if (configuration.snapshot.isBlacklisted(target)) {
+            io.github.zailinn.flymefreeform.log.ModuleLog.debug("FFLAUNCH") { "PANEL_TOOL_ZOOM_SKIPPED_EXCLUDED_" + target }
+            return
+        }
         if (!PanelToolLaunchBridge.apply(target, options)) return
         io.github.zailinn.flymefreeform.log.ModuleLog.debug("FFLAUNCH") { "PANEL_TOOL_ZOOM_" + target }
     }
@@ -259,6 +258,23 @@ internal class SidebarHookInstaller(private val module: XposedModule, private va
     private fun log(priority: Int, code: String, throwable: Throwable?) = module.log(priority, "FlymeFreeform", code, throwable)
 
     private companion object {
+        /**
+         * 按签名而不是混淆名找工具启动入口：16.11.3 叫 `m(Intent, Bundle, UserHandle)`，
+         * 16.14 / 17.9 叫 `n(...)`，17.11 又加了一个 Kotlin 回调参数 `n(Intent, Bundle, UserHandle, l)`
+         * 并带一个 synthetic 默认参数桥。取前三个参数匹配、静态、非 synthetic 且唯一的那个；
+         * 桥方法最终也调用它，拦它一个即可。
+         */
+        fun toolLaunchMethod(platform: Class<*>): java.lang.reflect.Method {
+            val prefix = arrayOf(Intent::class.java, Bundle::class.java, android.os.UserHandle::class.java)
+            val candidates = platform.declaredMethods.filter { method ->
+                java.lang.reflect.Modifier.isStatic(method.modifiers) && !method.isSynthetic && !method.isBridge &&
+                    method.returnType == Void.TYPE && method.parameterCount in 3..4 &&
+                    method.parameterTypes.take(3).toTypedArray().contentEquals(prefix)
+            }
+            return candidates.singleOrNull()
+                ?: throw NoSuchMethodException(APP_PLATFORM_UTILS_CLASS + " startActivityAsUser x" + candidates.size)
+        }
+
         /** 侧边栏的参数转交入口：Intent 与小窗参数在这里合并后交给系统 uid 发起。 */
         const val APP_PLATFORM_UTILS_CLASS = "com.oplus.smartsidebar.utils.AppPlatformUtils"
     }

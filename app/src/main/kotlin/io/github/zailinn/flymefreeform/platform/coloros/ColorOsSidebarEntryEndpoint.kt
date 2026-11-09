@@ -153,10 +153,12 @@ internal class ColorOsSidebarEntryEndpoint(
                 handler.postDelayed({ prepare(request, entries) }, 50L)
                 return
             }
+            val readyAt = SystemClock.uptimeMillis()
             val target = request.target
             if (target == null) {
                 execute(request) {
                     val loaded = entries.load(Process.myUid() / 100_000)
+                    val loadedAt = SystemClock.uptimeMillis()
                     for ((index, entry) in loaded.withIndex()) {
                         if (!request.active.get() || SystemClock.uptimeMillis() >= request.deadline || !allowed()) return@execute
                         request.reply.send(SidebarEntryProtocol.item(request.id, index, entry))
@@ -164,6 +166,10 @@ internal class ColorOsSidebarEntryEndpoint(
                     send(request, SidebarEntryProtocol.message(SidebarEntryProtocol.COMPLETE, request.id).apply {
                         data.putInt(SidebarEntryProtocol.COUNT, loaded.size)
                     })
+                    // 侧边栏一侧的耗时：等面板就绪、读目录（含画图标）、逐项发送。
+                    val sentAt = SystemClock.uptimeMillis()
+                    log(Log.INFO, "SIDEBAR_ENTRIES_LIST_READY_wait" + (readyAt - request.receivedAt) +
+                        "_load" + (loadedAt - readyAt) + "_send" + (sentAt - loadedAt) + "_n" + loaded.size, null)
                     handler.post { finish(request) }
                 }
             } else {
@@ -222,6 +228,7 @@ internal class ColorOsSidebarEntryEndpoint(
 
     private inner class Request(val id: String, val deadline: Long, val reply: Messenger, val target: PinnedTarget.Sidebar?) {
         val active = AtomicBoolean(true)
+        val receivedAt = SystemClock.uptimeMillis()
         var linked = false
         var prepared: ColorOsSidebarEntries? = null
         val timeout = Runnable { finish(this) }

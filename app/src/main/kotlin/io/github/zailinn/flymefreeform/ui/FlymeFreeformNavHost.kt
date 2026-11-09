@@ -42,9 +42,12 @@ internal sealed interface AppRoute : NavKey {
 internal fun FlymeFreeformNavHost(
     state: FrameworkConnectionState,
     apps: List<SelectableEntry>,
+    appStatus: io.github.zailinn.flymefreeform.apps.AppListStatus,
+    appIcons: io.github.zailinn.flymefreeform.apps.LauncherAppRepository.AppIconLoader,
+    squareIconMask: android.graphics.Bitmap?,
+    onRetryApps: () -> Unit,
     sidebarCatalog: io.github.zailinn.flymefreeform.apps.SidebarCatalogState,
     onRefreshCatalog: () -> Unit,
-    onCancelCatalog: () -> Unit,
     onModuleEnabledChange: (Boolean) -> Unit,
     onCornerSidesChange: (Boolean, Boolean) -> Unit,
     onCornerTriggerRangeChange: (Int) -> Unit,
@@ -130,10 +133,10 @@ internal fun FlymeFreeformNavHost(
             onNavigateToBlacklist = navigateToBlacklist,
         )
     }
-    val squareIconMask = remember(apps) { squareIconMaskOf(apps) }
     CompositionLocalProvider(
         LocalIconShape provides state.settings.iconShape,
         LocalSquareIconMask provides squareIconMask,
+        LocalAppIcons provides appIcons,
     ) {
     NavDisplay(
         backStack = backStack,
@@ -198,6 +201,8 @@ internal fun FlymeFreeformNavHost(
             BlacklistPickerScreen(
                 state = state,
                 apps = apps,
+                appStatus = appStatus,
+                onRetryApps = onRetryApps,
                 onBack = popBackStack,
                 onBlacklistChange = onBlacklistChange,
             )
@@ -206,9 +211,10 @@ internal fun FlymeFreeformNavHost(
             PinnedAppsScreen(
                 state = state,
                 apps = apps,
+                appStatus = appStatus,
+                onRetryApps = onRetryApps,
                 sidebarCatalog = sidebarCatalog,
                 onRefreshCatalog = onRefreshCatalog,
-                onCancelCatalog = onCancelCatalog,
                 onBack = popBackStack,
                 onPinnedTargetsChange = onPinnedTargetsChange,
                 onInnerArcTargetsChange = onInnerArcTargetsChange,

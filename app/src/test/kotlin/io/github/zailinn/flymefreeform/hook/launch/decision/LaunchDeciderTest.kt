@@ -188,6 +188,45 @@ class LaunchDeciderTest {
         e.controlCenter += x
         cases.forEach { (s, expected) -> assertEquals("$s", expected, reason(inject(s, e, m, 1000))) }
     }
+    @Test fun secondaryUserSourcesMatchByAppId() {
+        val e = Environment(); val m = LaunchMemory()
+        val base = link().copy(hasResultTo = false, callingPackage = "system.source")
+        val user10 = 10 * LaunchRules.PER_USER_RANGE
+        assertEquals("notification", reason(inject(base.copy(zoomSourceExtra = 1, realCallingUid = user10 + e.systemUiUid), e, m, 1000)))
+        assertEquals("launcher_shortcut", reason(inject(base.copy(callingPackage = x, componentPackage = x,
+            action = LaunchRules.ACTION_MAIN, realCallingUid = user10 + e.launcherUid, flags = 0x14000000), e, m, 1000)))
+        // 别的应用（appId 不同）在任何用户下都不算 SystemUI。
+        assertNull(reason(inject(base.copy(zoomSourceExtra = 1, realCallingUid = user10 + e.systemUiUid + 1), e, m, 1000)))
+    }
+    @Test fun secondarySystemUiMatchesEachCallingIdentityAndPreservesFullscreen() {
+        val e = Environment()
+        val uid = 10 * LaunchRules.PER_USER_RANGE + e.systemUiUid
+        val base = link().copy(hasResultTo = false, callingPackage = "system.source", zoomSourceExtra = 1)
+        val sources = listOf(base.copy(callingUid = uid), base.copy(realCallingUid = uid), base.copy(requestRealCallingUid = uid))
+        sources.forEach { source ->
+            assertEquals("notification", reason(inject(source, e, LaunchMemory(), 1000)))
+            assertNull(reason(inject(source.copy(optionsFullscreen = true), e, LaunchMemory(), 1000)))
+        }
+    }
+
+    @Test fun secondaryLauncherShortcutAcceptsRealAndRequestIdentitiesOnly() {
+        val e = Environment()
+        val uid = 10 * LaunchRules.PER_USER_RANGE + e.launcherUid
+        val base = self(x).copy(hasResultTo = false, realCallingUid = -1, requestRealCallingUid = -1)
+        assertEquals("launcher_shortcut", reason(inject(base.copy(realCallingUid = uid), e, LaunchMemory(), 1000)))
+        assertEquals("launcher_shortcut", reason(inject(base.copy(requestRealCallingUid = uid), e, LaunchMemory(), 1000)))
+        assertNull(reason(inject(base.copy(callingUid = uid), e, LaunchMemory(), 1000)))
+    }
+
+    @Test fun invalidOrDifferentAppIdsCannotImpersonateSystemUiInAnyUser() {
+        val e = Environment()
+        val base = link().copy(hasResultTo = false, callingPackage = "system.source", zoomSourceExtra = 1)
+        listOf(-1, 0, 100_000, 10 * LaunchRules.PER_USER_RANGE + e.systemUiUid + 1).forEach { uid ->
+            val source = base.copy(callingUid = uid, realCallingUid = uid, requestRealCallingUid = uid)
+            assertNull(reason(inject(source, e, LaunchMemory(), 1000)))
+            assertTrue(pre(source, e, LaunchMemory(), 1000) is LaunchDecision.PassThrough)
+        }
+    }
     @Test fun systemDispatcherCanPreempt() {
         val e = Environment().apply { owner = telegram }; val m = LaunchMemory()
         val d = pre(link().copy(callingPackage = "android.ext.services", hasResultTo = false), e, m, 1000)
@@ -231,6 +270,22 @@ class LaunchDeciderTest {
         }
         e.excluded.clear(); e.unlocked = false
         sources.forEach { assertTrue(inject(it, e, m, 1000) is LaunchDecision.PassThrough) }
+    }
+
+    @Test fun systemUiExplicitFullscreenKeepsNotificationFullscreen() {
+        val e = Environment(); val m = LaunchMemory()
+        val base = link().copy(hasResultTo = false, callingPackage = systemUi, hasPendingIntent = true,
+            realCallingUid = e.systemUiUid)
+        assertEquals("notification", reason(inject(base, e, m, 1000)))
+        assertTrue(inject(base.copy(optionsFullscreen = true), e, m, 1000) is LaunchDecision.PassThrough)
+        val tile = link().copy(hasResultTo = false, callingPackage = systemUi, callingUid = e.systemUiUid)
+        assertTrue(pre(tile, e, m, 1000) is LaunchDecision.Preempt)
+        assertTrue(pre(tile.copy(optionsFullscreen = true), e, m, 1000) is LaunchDecision.PassThrough)
+    }
+
+    @Test fun untrustedFullscreenOptionsDoNotBlockInterApp() {
+        val e = Environment(); val m = LaunchMemory()
+        assertEquals("inter_app", reason(inject(link().copy(optionsFullscreen = true), e, m, 1000)))
     }
 
     @Test fun untrustedMarkerDoesNotCreateNotificationReason() {

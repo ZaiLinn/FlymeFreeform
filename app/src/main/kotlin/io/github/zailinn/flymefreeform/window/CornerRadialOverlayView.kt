@@ -36,11 +36,14 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -148,12 +151,20 @@ internal class CornerRadialOverlayView(
     private val handoffLayoutState = mutableStateOf(EMPTY_LAYOUT)
     private val handoffMetricsState = mutableStateOf<RadialVisualMetrics?>(null)
     private var appliedWindowInsets: WindowInsets? = null
-    private var catalog = AppCatalogSnapshot()
+    /** 当前目录放在 State 里：同一批条目换上新目录（本地副本换成真实目录、面板列表补齐）时，读它的界面随之重组。 */
+    private val catalogState = mutableStateOf(AppCatalogSnapshot(), referentialEqualityPolicy())
+    private var catalog: AppCatalogSnapshot
+        get() = catalogState.value
+        set(value) {
+            catalogState.value = value
+        }
     private val radialImages = mutableStateOf<List<RadialImage>>(emptyList())
     /** 方形图标时「更多」底板的外形模板（取自扇形里的应用图标）；圆形或取不到时为 null。 */
     private val morePlateMask = mutableStateOf<ImageBitmap?>(null)
-    /** 面板图标：开场时已画好的直接放入，其余由格子出现在视野里时按需请求（见 AppCatalogSnapshot.panelIconLoader）。 */
-    private val panelImages = mutableStateMapOf<io.github.zailinn.flymefreeform.config.PinnedTarget, ImageBitmap>()
+    /**
+     * 面板图标：自带图标的条目（侧边栏工具等）开场时放入；应用条目由格子出现在视野里时按需请求
+     * （见 AppCatalogSnapshot.panelIconLoader），格子离开组合即移除，只持有可见范围及缓冲行，其余交给目录的有上限缓存。
+     */
     private var side = CornerSide.Right
     private var radialHitRangeDp = ModulePreferences.DEFAULT_RADIAL_HIT_RANGE_DP
     /** 「永久保持」：松手未选中时保留浮层，并允许直接点选条目。 */
@@ -254,11 +265,78 @@ internal class CornerRadialOverlayView(
     }
 
     fun updateRadialAppearance(next: AppCatalogSnapshot) {
-        if (disposed || dismissing || panelModeState.value) return
-        // 只替换同一批应用的图像，不在滑选途中交换目标或重置入场动画。
-        if (catalog.radialApps.map { it.target } != next.radialApps.map { it.target }) return
+        if (disposed || dismissing) return
+        if (panelModeState.value) {
+            updatePanelCatalog(next)
+            return
+        }
+        val accepted = RadialCatalogUpdate.accept(catalog, next) { snapshot -> snapshot.radialApps.map { it.target } } ?: return
+        if (catalog.radialApps.isEmpty() && accepted.radialApps.isNotEmpty()) {
+            // 呼出时目录还没就绪（只有「更多」一格）：目录一发布就整体补进这次的扇形，不必松手再呼出。
+            replaceEmptyCatalog(accepted)
+            return
+        }
+        // 条目不同的目录留到下次呼出：不在滑选途中交换目标或重置入场动画。
+        adoptSameTargets(accepted)
+    }
+
+    /**
+     * 同一批条目：整份换上新目录（图像、高清与面板加载器、面板列表、分圈），保留选中项与手势状态。
+     * 本地副本没有加载器、面板为空，真实目录到达后中央高清图与内置「更多」随之可用，不必重新呼出。
+     */
+    private fun adoptSameTargets(next: AppCatalogSnapshot) {
+        val previous = catalog
+        catalog = next
         radialImages.value = next.radialApps.map(::RadialImage)
         morePlateMask.value = MorePlateMasks.of(next)
+        if (next.previewIconLoader !== previous.previewIconLoader) {
+            // 旧加载器在途的请求作废，改向新加载器请求（目录按条目合并在途任务，不会重画）。
+            // 已显示的高清图只在条目图标换了（应用更新）时丢弃，其余保留，不闪回小图。
+            previewGeneration++
+            previewRequests.values.forEach { it() }
+            previewRequests.clear()
+            previous.radialApps.forEachIndexed { index, old ->
+                if (next.radialApps[index].icon !== old.icon) previewImages.remove(old.target)
+            }
+            if (centerPreview) next.radialApps.indices.forEach(::requestPreviewImage)
+        }
+        if (previous.radialArcCounts != next.radialArcCounts || previous.panelApps.size != next.panelApps.size ||
+            previous.settings.effectiveRadialArcCount != next.settings.effectiveRadialArcCount ||
+            previous.settings.radialMaxItems != next.settings.radialMaxItems
+        ) {
+            // 分圈或面板条数变了才重算布局；updateLayout 会按手指当前位置重新判定选中项。
+            updateLayout()
+        }
+    }
+
+    /**
+     * 内置面板已显示：只在面板还空着（本地副本）或条目顺序相同（只换了加载器）时换上新列表，
+     * 不在用户浏览途中重排格子。
+     */
+    private fun updatePanelCatalog(next: AppCatalogSnapshot) {
+        val current = catalog
+        val sameOrder = current.panelApps.map { it.target } == next.panelApps.map { it.target }
+        if (current.panelApps.isNotEmpty() && !sameOrder) return
+        if (sameOrder && current.panelIconLoader === next.panelIconLoader) return
+        catalog = current.copy(panelApps = next.panelApps, panelIconLoader = next.panelIconLoader)
+        if (!sameOrder) updateLayout()
+    }
+
+    /** 只在当前扇形为空时调用：换上新目录、重算布局，并按手指当前位置重新判定选中项。 */
+    private fun replaceEmptyCatalog(next: AppCatalogSnapshot) {
+        catalog = next
+        previewGeneration++
+        previewRequests.values.forEach { it() }
+        previewRequests.clear()
+        previewImages.clear()
+        if (centerPreview) next.radialApps.indices.forEach(::requestPreviewImage)
+        radialImages.value = next.radialApps.map(::RadialImage)
+        morePlateMask.value = MorePlateMasks.of(next)
+        selectedIndex = null
+        selectedIndexState.intValue = NO_SELECTION
+        lastSelectedArc = -1
+        updateLayout()
+        updateGestureFromLatestPoint()
     }
 
     fun begin(
@@ -293,10 +371,6 @@ internal class CornerRadialOverlayView(
         latestY = y
         radialImages.value = catalog.radialApps.map(::RadialImage)
         morePlateMask.value = MorePlateMasks.of(catalog)
-        panelImages.clear()
-        catalog.panelApps.forEach { entry ->
-            if (!PanelIconPlaceholder.isPlaceholder(entry.icon)) panelImages[entry.target] = entry.icon.asImageBitmap()
-        }
         selectedIndex = null
         selectedIndexState.intValue = NO_SELECTION
         lastSelectedArc = -1
@@ -361,6 +435,8 @@ internal class CornerRadialOverlayView(
         disposed = true
         previewRequests.values.forEach { it() }
         previewRequests.clear()
+        // 收起即放开高清图引用：补位项的图由目录缓存按上限保留，不随浮层对象等回收才释放。
+        previewImages.clear()
         backdropAnimator?.cancel()
         backdropAnimator = null
         removeCallbacks(timeout)
@@ -576,7 +652,8 @@ internal class CornerRadialOverlayView(
                     modifier =
                         Modifier
                             .fillMaxSize()
-                            .pointerInput(radialLayout, catalog, radialHitRangeDp) {
+                            .pointerInput(radialLayout, radialHitRangeDp) {
+                                // catalog 在点按时经属性现读，换目录不必重启手势检测。
                                 detectTapGestures { offset ->
                                     val hitRadius =
                                         radialHitRangeDp * resources.displayMetrics.density
@@ -1011,7 +1088,24 @@ internal class CornerRadialOverlayView(
                                 },
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        val image = panelImages[entry.target]
+                        val loader = catalog.panelIconLoader
+                        val placeholder = PanelIconPlaceholder.isPlaceholder(entry.icon)
+                        // 图像属于当前格子与当前加载器，旧 effect 清理不能影响新会话。
+                        var loaded by remember(entry.target, loader) {
+                            mutableStateOf(loader?.cached(entry.target)?.asImageBitmap())
+                        }
+                        if (placeholder) {
+                            DisposableEffect(entry.target, loader) {
+                                val session = VisibleIconRequest<ImageBitmap> { loaded = it }
+                                session.start(loader?.cached(entry.target)?.asImageBitmap()) { receive ->
+                                    loader?.request(entry.target) { bitmap ->
+                                        post { if (!disposed) receive(bitmap.asImageBitmap()) }
+                                    } ?: {}
+                                }
+                                onDispose { session.close() }
+                            }
+                        }
+                        val image = if (placeholder) loaded else remember(entry.icon) { entry.icon.asImageBitmap() }
                         if (image != null) {
                             Image(
                                 bitmap = image,
@@ -1022,15 +1116,6 @@ internal class CornerRadialOverlayView(
                         } else {
                             // 图标未画好时留出同样大小的空位，名称不跳动；格子在视野里才请求。
                             Spacer(modifier = Modifier.size(iconSize))
-                            DisposableEffect(entry.target) {
-                                val cancel =
-                                    catalog.panelIconLoader?.request(entry.target) { bitmap ->
-                                        post {
-                                            if (!disposed) panelImages[entry.target] = bitmap.asImageBitmap()
-                                        }
-                                    }
-                                onDispose { cancel?.invoke() }
-                            }
                         }
                         Spacer(modifier = Modifier.height(labelGap))
                         Text(
@@ -1222,7 +1307,20 @@ internal class CornerRadialOverlayView(
         handoffLayoutState.value = layoutState.value
         handoffMetricsState.value = metricsState.value?.radial
         removeCallbacks(timeout)
+        prefetchPanelFirstScreen()
         listener.onMorePanelRequested()
+    }
+
+    /** 内置面板第一屏（含相邻缓冲行）里还是占位图的条目，交给目录预画；量不出布局时取前 [PANEL_PREFETCH_FALLBACK] 项。 */
+    private fun prefetchPanelFirstScreen() {
+        val loader = catalog.panelIconLoader ?: return
+        val apps = catalog.panelApps
+        val range = metricsState.value?.panel?.visibleItemRange(apps.size, 0f)
+            ?: (0 until minOf(apps.size, PANEL_PREFETCH_FALLBACK))
+        val targets = range.mapNotNull { apps.getOrNull(it) }
+            .filter { PanelIconPlaceholder.isPlaceholder(it.icon) && loader.cached(it.target) == null }
+            .map { it.target }
+        if (targets.isNotEmpty()) loader.prefetch(targets)
     }
 
     fun showBuiltInMorePanel() {
@@ -1432,6 +1530,7 @@ internal class CornerRadialOverlayView(
         const val GESTURE_TIMEOUT_MS = 5_000L
 
         const val PANEL_TIMEOUT_MS = 15_000L
+        const val PANEL_PREFETCH_FALLBACK = 24
         const val DISMISS_FALLBACK_GRACE_MS = 260L
     }
 }

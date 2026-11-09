@@ -1,6 +1,9 @@
 package io.github.zailinn.flymefreeform.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -28,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.zailinn.flymefreeform.R
+import io.github.zailinn.flymefreeform.apps.AppListStatus
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
 import io.github.zailinn.flymefreeform.config.PinnedTarget
 import io.github.zailinn.flymefreeform.framework.FrameworkConnectionState
@@ -36,6 +40,7 @@ import io.github.zailinn.flymefreeform.ui.component.rememberTopBarBackdrop
 import io.github.zailinn.flymefreeform.ui.component.topBarContainerColor
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -44,6 +49,7 @@ import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
@@ -133,6 +139,8 @@ internal fun BlacklistScreen(
 internal fun BlacklistPickerScreen(
     state: FrameworkConnectionState,
     apps: List<SelectableEntry>,
+    appStatus: AppListStatus,
+    onRetryApps: () -> Unit,
     onBack: () -> Unit,
     onBlacklistChange: (String, Boolean) -> Unit,
 ) {
@@ -146,17 +154,7 @@ internal fun BlacklistPickerScreen(
     val enabled = state.settingsEditable
     var query by remember { mutableStateOf("") }
     val appEntries = remember(apps) { apps.filter { it.target is PinnedTarget.App } }
-    val candidates =
-        remember(appEntries, query) {
-            if (query.isBlank()) {
-                appEntries
-            } else {
-                appEntries.filter {
-                    it.label.contains(query, ignoreCase = true) ||
-                        it.packageName.contains(query, ignoreCase = true)
-                }
-            }
-        }
+    val candidates = rememberSearchResults(appEntries, query)
     ScreenScaffold(
         title = stringResource(R.string.blacklist_add_action),
         onBack = onBack,
@@ -181,42 +179,74 @@ internal fun BlacklistPickerScreen(
                     singleLine = true,
                 )
             }
-            item(key = "list") {
-                Card(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                    Column {
-                        if (candidates.isEmpty()) {
+            // 逐行懒加载：数百个应用只组合眼前几行，图标也只为这几行请求。行底色与圆角仿 Card。
+            when {
+                appEntries.isEmpty() && appStatus != AppListStatus.Ready ->
+                    item(key = "status") {
+                        CardSegment(index = 0, count = 1) { AppListStatusRow(appStatus, onRetryApps) }
+                    }
+                candidates.isEmpty() ->
+                    item(key = "empty") {
+                        CardSegment(index = 0, count = 1) {
                             BasicComponent(
-                                title = stringResource(R.string.no_matching_apps),
+                                title = stringResource(if (appEntries.isEmpty()) R.string.available_apps_empty else R.string.no_matching_apps),
                                 enabled = false,
                             )
-                        } else {
-                            candidates.forEach { entry ->
-                                val added = pending[entry.packageName] ?: (entry.packageName in blacklist)
-                                BasicComponent(
-                                    title = entry.label,
-                                    summary = entry.packageName,
-                                    startAction = { EntryIcon(entry) },
-                                    endActions = {
-                                        if (added) {
-                                            Text(
-                                                text = stringResource(R.string.blacklist_added),
-                                                style = MiuixTheme.textStyles.body2,
-                                                color = MiuixTheme.colorScheme.primary,
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        if (!enabled) return@BasicComponent
-                                        pending[entry.packageName] = !added
-                                        onBlacklistChange(entry.packageName, !added)
-                                    },
-                                )
-                            }
                         }
                     }
-                }
+                else ->
+                    itemsIndexed(candidates, key = { _, entry -> entry.packageName + "/" + (entry.target as PinnedTarget.App).className }) { index, entry ->
+                        val added = pending[entry.packageName] ?: (entry.packageName in blacklist)
+                        CardSegment(index = index, count = candidates.size) {
+                            BasicComponent(
+                                title = entry.label,
+                                summary = entry.packageName,
+                                startAction = { EntryIcon(entry) },
+                                endActions = {
+                                    if (added) {
+                                        Text(
+                                            text = stringResource(R.string.blacklist_added),
+                                            style = MiuixTheme.textStyles.body2,
+                                            color = MiuixTheme.colorScheme.primary,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    if (!enabled) return@BasicComponent
+                                    pending[entry.packageName] = !added
+                                    onBlacklistChange(entry.packageName, !added)
+                                },
+                            )
+                        }
+                    }
             }
         }
+    }
+}
+
+/**
+ * 懒加载列表里的一行，拼起来像一张 Card：首行圆上角并与搜索框隔开，末行圆下角。
+ * 与 miuix Card 同样用 `squircleSurface`（平滑圆角），只是四个角分别给半径。
+ */
+@Composable
+private fun CardSegment(index: Int, count: Int, content: @Composable () -> Unit) {
+    val radius = CardDefaults.CornerRadius
+    val top = if (index == 0) radius else 0.dp
+    val bottom = if (index == count - 1) radius else 0.dp
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(top = if (index == 0) 12.dp else 0.dp)
+                .squircleSurface(
+                    CardDefaults.defaultColors().color,
+                    topStart = top,
+                    topEnd = top,
+                    bottomEnd = bottom,
+                    bottomStart = bottom,
+                ),
+    ) {
+        content()
     }
 }
 
@@ -275,8 +305,14 @@ private fun BackButton(onBack: () -> Unit) {
 @Composable
 private fun EntryIcon(entry: SelectableEntry?) {
     if (entry == null) return
+    // 应用图标按需加载，未就绪时留出同样大小的空位。
+    val icon = rememberEntryIcon(entry, isApp = true)
+    if (icon == null) {
+        Spacer(modifier = Modifier.padding(end = 6.dp).size(32.dp))
+        return
+    }
     Image(
-        bitmap = rememberShapedIcon(entry.icon, isApp = true),
+        bitmap = icon,
         contentDescription = null,
         modifier = Modifier.padding(end = 6.dp).size(32.dp),
     )

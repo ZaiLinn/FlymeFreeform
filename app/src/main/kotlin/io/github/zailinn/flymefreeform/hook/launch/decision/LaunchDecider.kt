@@ -26,7 +26,8 @@ internal object LaunchDecider {
         val callingPackage = s.callingPackage.orEmpty()
         val systemUiUid = env.systemUiUid
         val fromSystemUi = systemUiUid > 0 &&
-            (s.callingUid == systemUiUid || s.realCallingUid == systemUiUid || s.requestRealCallingUid == systemUiUid)
+            (sameApp(s.callingUid, systemUiUid) || sameApp(s.realCallingUid, systemUiUid) ||
+                sameApp(s.requestRealCallingUid, systemUiUid))
         val target = s.preemptTarget ?: return pass()
         if (env.isExcluded(target)) {
             events += LaunchEvent.Log("ZOOM_SKIPPED_EXCLUDED_" + target)
@@ -57,7 +58,7 @@ internal object LaunchDecider {
             env.dispatchOwner(callingPackage, s.realCallingUid, s.requestRealCallingUid) != null &&
                 env.zoomLaunch && target !in SKIP_TARGETS -> true
             s.hasPendingIntent -> false
-            fromSystemUi -> env.zoomLaunch && target !in SKIP_TARGETS_FOR_TILES
+            fromSystemUi -> env.zoomLaunch && target !in SKIP_TARGETS_FOR_TILES && !s.optionsFullscreen
             else -> false
         }
         events += LaunchEvent.Log("ZOOM_DECISION_" + s.stage +
@@ -88,6 +89,14 @@ internal object LaunchDecider {
             s.callingPackage to destination else null
         return LaunchDecision.Inject(reason, selfInject, selfTarget, record, events.toList())
     }
+
+    /**
+     * [appId] 是 [LaunchEnvironment.systemUiUid] / [LaunchEnvironment.launcherUid]，按 appId（去掉用户号）保存；
+     * 启动里的 uid 带用户号（非主用户下桌面是 u10_aXXX），只比 appId。同一应用在各用户下 appId 相同、
+     * 不同应用一定不同，比 appId 不会把别的应用认成 SystemUI / 桌面；uid 本身不改，其余判定仍按原值。
+     */
+    private fun sameApp(uid: Int, appId: Int): Boolean =
+        appId > 0 && uid >= 0 && uid % LaunchRules.PER_USER_RANGE == appId
 
     private fun isSelfRelaunch(env: LaunchEnvironment, memory: LaunchMemory, callingPackage: String?,
         target: String, s: LaunchSnapshot, now: Long): Boolean =
@@ -126,7 +135,13 @@ internal object LaunchDecider {
         // 全部启动回到系统默认的全屏行为。
         if (!env.zoomLaunch) return null
         val trustedSource = systemUiUid > 0 &&
-            (callingUid == systemUiUid || realCallingUid == systemUiUid || requestRealUid == systemUiUid)
+            (sameApp(callingUid, systemUiUid) || sameApp(realCallingUid, systemUiUid) || sameApp(requestRealUid, systemUiUid))
+        // SystemUI 在启动参数里写明全屏：通知所属应用已在前台全屏（见 NotifBundleHook），
+        // 保持系统默认的全屏跳转。必须先于下方通知判定，否则 systemUiPending 仍会补写小窗参数。
+        if (trustedSource && s.optionsFullscreen) {
+            events += LaunchEvent.Log("ZOOM_SKIP_SYSTEMUI_FULLSCREEN_" + target)
+            return null
+        }
         if (trustedSource && s.zoomSourceExtra == 1) {
             return "notification"
         }
@@ -228,7 +243,7 @@ internal object LaunchDecider {
         // 再次注入会覆盖系统参数，表现为窗口延迟出现且无过渡动画。
         val fromSystemUi =
             systemUiUid > 0 &&
-                (callingUid == systemUiUid || realCallingUid == systemUiUid || requestRealUid == systemUiUid)
+                (sameApp(callingUid, systemUiUid) || sameApp(realCallingUid, systemUiUid) || sameApp(requestRealUid, systemUiUid))
         if (fromSystemUi) {
             val action = s.action.orEmpty()
             val isTileLaunch =
@@ -278,7 +293,7 @@ internal object LaunchDecider {
             callingPackage != null &&
                 callingPackage == target &&
                 launcherUid > 0 &&
-                (realCallingUid == launcherUid || requestRealUid == launcherUid)
+                (sameApp(realCallingUid, launcherUid) || sameApp(requestRealUid, launcherUid))
         if (fromShortcut && !hasResultTo && target !in SKIP_TARGETS) {
             return "launcher_shortcut"
         }

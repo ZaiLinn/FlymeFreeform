@@ -27,14 +27,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state = repository.state.collectAsStateWithLifecycle().value
             val sidebarCatalog = sidebarRepository.state.collectAsStateWithLifecycle().value
-            val apps = appRepository.apps.collectAsStateWithLifecycle().value
+            val appList = appRepository.state.collectAsStateWithLifecycle().value
+            val squareIconMask = appRepository.squareMask.collectAsStateWithLifecycle().value
             FlymeFreeformTheme {
                 FlymeFreeformNavHost(
                     state = state,
-                    apps = apps,
+                    apps = appList.entries,
+                    appStatus = appList.status,
+                    appIcons = appRepository.icons,
+                    squareIconMask = squareIconMask,
+                    onRetryApps = appRepository::refresh,
                     sidebarCatalog = sidebarCatalog,
                     onRefreshCatalog = sidebarRepository::refresh,
-                    onCancelCatalog = sidebarRepository::cancel,
                     onModuleEnabledChange = repository::setModuleEnabled,
                     onCornerSidesChange = repository::setCornerSides,
                     onCornerTriggerRangeChange = repository::setCornerTriggerRangeDp,

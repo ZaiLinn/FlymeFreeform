@@ -107,14 +107,23 @@ internal class OutsideTapCloseHookInstaller(
                         val controller = chain.thisObject
                         val task = chain.getArg(0)
                         if (controller != null) access.rememberController(controller)
-                        if (controller != null && task != null) {
+                        // 只在功能开启时安排；区域已就绪（任务已受保护）就取消余下几次，按 task 作令牌。
+                        val settings = configuration.snapshot
+                        if (controller != null && task != null && settings.enabled && settings.outsideTapCloseMode.closesOnOutsideTap) {
+                            val start = android.os.SystemClock.uptimeMillis()
                             listOf(500L, 1000L, 1600L, 2600L).forEach { delay ->
-                                skinHandler.postDelayed(
+                                skinHandler.postAtTime(
                                     {
-                                        runCatching { access.refreshCaptionRegion(controller, task) }
-                                        Unit
+                                        val current = configuration.snapshot
+                                        if (!current.enabled || !current.outsideTapCloseMode.closesOnOutsideTap || access.isTaskProtected(task)) {
+                                            skinHandler.removeCallbacksAndMessages(task)
+                                        } else {
+                                            runCatching { access.refreshCaptionRegion(controller, task) }
+                                            if (access.isTaskProtected(task)) skinHandler.removeCallbacksAndMessages(task)
+                                        }
                                     },
-                                    delay,
+                                    task,
+                                    start + delay,
                                 )
                             }
                         }
@@ -466,6 +475,8 @@ internal class OutsideTapCloseHookInstaller(
             if (task != null) synchronized(protectedTasks) { protectedTasks.remove(task) }
             return null
         }
+
+        fun isTaskProtected(task: Any): Boolean = isProtected(task)
 
         private fun isProtected(task: Any): Boolean =
             synchronized(protectedTasks) { protectedTasks.containsKey(task) }

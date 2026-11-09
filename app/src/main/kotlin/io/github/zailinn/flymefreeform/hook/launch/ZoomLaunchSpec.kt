@@ -9,7 +9,7 @@ import android.os.Bundle
  * 任意一项缺失，ActivityStarter 会退回窗口模式 0（全屏）。
  */
 internal object ZoomLaunchSpec {
-    /** 跨进程来源标记：SystemUI 写入，system_server 读取。 */
+    /** 跨进程来源标记：system_server 读取；SystemUI 不改写通知点击入口，目前无写入方。 */
     const val EXTRA_SOURCE = "flymefreeform_zoom_source"
 
     /** 通知点击来源的取值。 */
@@ -26,6 +26,21 @@ internal object ZoomLaunchSpec {
     private const val WINDOW_MODE_ZOOM = 100
     private const val ZOOM_FLAGS = 5
     private const val LAUNCH_SCENARIO = 1
+
+    /** WindowConfiguration.WINDOWING_MODE_FULLSCREEN。 */
+    const val WINDOWING_MODE_FULLSCREEN = 1
+
+    /**
+     * 在启动参数里写明全屏：SystemUI 判定通知所属应用已在前台全屏时写入，
+     * system_server 见 SystemUI 发起且写明全屏即不改写（[explicitFullscreen]）。
+     * 该键是 AOSP ActivityOptions 的标准键，经 toBundle 往返后保留。
+     */
+    fun markFullscreen(options: Bundle) {
+        options.putInt(KEY_WINDOWING_MODE, WINDOWING_MODE_FULLSCREEN)
+    }
+
+    fun explicitFullscreen(original: Bundle?): Boolean =
+        original != null && original.getInt(KEY_WINDOWING_MODE, 0) == WINDOWING_MODE_FULLSCREEN
 
     /** 判定原始 options 是否已携带系统写入的小窗参数；已存在时不重复写入。 */
     fun alreadyZoom(original: Bundle?): Boolean =

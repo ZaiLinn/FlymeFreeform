@@ -24,6 +24,8 @@ internal data class LaunchSnapshot(
     val zoomAppliedExtra: Boolean = false,
     val quickSettingsExtra: Boolean = false,
     val optionsAlreadyZoom: Boolean = false,
+    /** 启动参数写明全屏（windowingMode 1）。 */
+    val optionsFullscreen: Boolean = false,
     val preempting: Boolean = false,
 ) {
     val hasData: Boolean get() = dataString != null
