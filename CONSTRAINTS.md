@@ -1,6 +1,6 @@
 # FlymeFreeform 实现说明
 
-源码、设备与 GitHub Release 均为 1.4.10 / versionCode 2026110915（`main` = `624f590` 已推送；1.4.9 未发布，其设置页闪退已在 1.4.10 修复）。包名 `io.github.zailinn.flymefreeform`
+源码与 GitHub Release 为 1.5.0 / versionCode 2026110916（`main` 已推送，标签 v1.5.0 = `f6601ad`）；设备 1.4.10 / 2026110915。v1.4.10 Release 与标签已删除。包名 `io.github.zailinn.flymefreeform`
 源码 `ZaiLinn/FlymeFreeform`（维护者 ZaiLinn；fork 自 `Hoerire/FlymeFreeform` ← `Mangi-11/FlymeFreeform`，致谢见 README）
 工作副本 `~/Documents/Code/FlymeFreeform`（macOS），临时文件 `tmp/`；构建、签名与发布见第六节。
 包名于 2026-11-08 由 `io.github.hoerire.flymefreeform` 改为现名，设备上的旧包名模块需卸载后再装新包。
@@ -211,6 +211,7 @@ SystemUI 侧不接管 `onNotificationClicked` 一类点击入口（见 `SystemUi
 后请求先画、离开即取消，结果已按外形处理，`LruCache` 12 MiB）按需加载。包变化时 `AppIconLoader.version` 递增（广播时一次、重读入口后再一次），
 可见行以它为键重新取图，作废前开始的任务既不进缓存也不回调。包变化只重读该包；切换语言丢弃全部名称；状态 Loading / Ready / Failed，
 失败时选择页显示重试，读完为空显示「没有可添加的应用」。方形模板 `squareMask` 由仓库在全量读取后取前 30 个应用。侧边栏条目的塑形结果放进 `ShapedIconCache`（4 MiB，按源图身份）。
+设置页页面栈：每次进出页面经 `NavStackStore` 写进本应用 SharedPreferences（`ui_state` / `back_stack`，路由名逗号分隔），冷启动没有保存状态（后台冻结 / 清理工具强行停止或移除任务）时据此恢复，有保存状态时以 rememberSaveable 为准；首页按返回退出时栈只剩首页。
 排除列表选择页逐行懒加载（`CardSegment` 用 `squircleSurface` 分角给半径，与 miuix Card 同一种平滑圆角）。搜索（`AppSearch`）去首尾空格，名称、包名包含即命中；查询为纯字母且名称含汉字时另按 ICU 全拼 / 首字母匹配，后台过滤。
 
 **设置广播**　设置页每次改设置都发 `ACTION_PINNED_TARGETS_CHANGED`，带完整快照（`SettingsTransfer.EXTRA_SETTINGS`，
@@ -319,7 +320,7 @@ PM 缓存（`StarterQueryCache`）开机后的冷窗口靠两处缩短：预热�
   （`security add-generic-password -a "$USER" -s flymefreeform-release -w` 添加一次）、交互输入，经 `env:` 传给 apksigner
 - 与 Hoerire 官方版、调试签名版互不能覆盖安装；从它们切换过来需先卸载（设置会丢）
 
-**版本号**（用户 2026-11-08 定）：每次代码更新 `flymeFreeformVersionCode` +1；每构建一次 APK，`flymeFreeformVersionName` 末位 +1（1.3.7 → 1.3.8），
+**版本号**（用户 2026-11-08 定）：每次代码更新 `flymeFreeformVersionCode` +1；每构建一次 APK，`flymeFreeformVersionName` 末位 +1（1.3.7 → 1.3.8）；末位只用 0–9，到 9 后下一次构建进位到中间一位、末位归 0（1.5.9 → 1.6.0；用户 2026-11-09 定，1.4.10 之后直接构建 1.5.0），
 构建前改好，产物名随之变化，同一版本名不出两个包。两项都在 `gradle.properties`。
 versionCode 格式为 `yyyyMMdd` + 两位当日序号，跨日时日期取当天、序号从 01 起（2026110852 → 2026110901，仍单调递增）。
 
@@ -419,7 +420,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 8. 扇形目录不得在刷新路径上加载全部应用图标；新增补位来源或排序时，只能在「挑选条目」一步做，图标仍按条目缓存
 9. 侧边栏 / 桌面的混淆名每个版本都可能变：按签名、字符串或调用关系找（DexKit 或签名匹配），不按单字母名写死；新版本先对照 `docs/sidebar-dex-resolution.md` 逐项核对
 10. `decision/` 包保持纯 Kotlin、无 android.* 依赖，判定改动必须带单测（`LaunchDeciderTest`）
-11. 版本号：每次代码更新 versionCode +1，构建前 versionName 末位 +1（见第六节）
+11. 版本号：每次代码更新 versionCode +1，构建前 versionName 末位 +1，末位到 9 后进位（1.5.9 → 1.6.0，见第六节）
 12. 工程纪律：构建输出落 `out/`、临时文件落 `tmp/`、`release.keystore` 必须保留、交付前 `tar -czf` 打包放存储根目录
 
 ## 十、当前状态
@@ -428,14 +429,14 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 | 项 | 值 |
 |---|---|
-| 源码 | 1.4.10 / versionCode 2026110915；`main` = `origin/main`，代码 `f7e62d8`、版本 `624f590`（标签 v1.4.10），之后只有文档提交；无未提交代码 |
-| 本版内容 | 2026110902–0915 合入 `f7e62d8`（通知前台全屏、启动原参数、starter 冷窗口、侧边栏与扇形本地副本、分身识别、多用户、减少重复工作与占用、设置页按需加载与拼音搜索、1.4.9 闪退修复）。逐条详情见 `docs/dev-history.md` |
-| 测试 | 2026110914：debug 编译与单测通过，272 项（269 通过、0 失败、3 跳过）；starter 静态检查、git diff --check 通过。新增 21 项验证状态与时序；Compose 实际渲染、Bitmap/GPU 占用及厂商服务仍待真机。1.4.9 构建（`local-release.sh`：starter 静态检查、单测 272 项 0 失败 3 跳过、assembleRelease、zipalign、v1/v2/v3 签名与校验）通过。范围见 `docs/regression-2026-11-09.md`。2026110915：单测 272 项 0 失败 3 跳过、`minifyReleaseWithR8`、lintVitalRelease 通过，R8 产物 dex 里 19 处 `$stable` 读取字段齐全、无读不存在静态字段 |
-| 构建 | 1.4.10 / 2026110915，`out/FlymeFreeform-v1.4.10.apk`（2228527 字节），sha256 `11f868b34607c029f17bb64894820a99fb3d95532d8028f3b439708a849c9098`，release.keystore 签名；`local-release.sh` 通过（单测 272 项 0 失败 3 跳过），dex 里 19 处 `$stable` 读取字段齐全；2026-11-09 22:53 `adb install -r` 装机 |
+| 源码 | 1.5.0 / versionCode 2026110916；`main` = `origin/main`，代码 `f7e62d8`（0902–0915）与 `da170ee`（0916 设置页记住上次页面），版本提交 `f6601ad`（标签 v1.5.0）；之后只有文档提交，无未提交代码 |
+| 本版内容 | 1.5.0 = 2026110902–0915（`f7e62d8`：通知前台全屏、启动原参数、starter 冷窗口、侧边栏与扇形本地副本、分身识别、多用户、减少重复工作与占用、设置页按需加载与拼音搜索、1.4.9 闪退修复）+ 2026110916（设置页记住上次页面）。逐条详情见 `docs/dev-history.md` |
+| 测试 | 2026110916：单测 275 项（0 失败、3 跳过），`minifyReleaseWithR8`、lintVitalRelease 通过，R8 产物 dex 无读取不存在的静态字段；未构建 APK、未在设备验证。1.4.10 发布前 `local-release.sh` 通过（272 项）。回归范围见 `docs/regression-2026-11-09.md` |
+| 构建 | 1.5.0 / 2026110916，`out/FlymeFreeform-v1.5.0.apk`（2228527 字节），sha256 `9a8361920fc5941cce7762bf0dd2214c97514d493210a02647b20dba6c43a89e`，release.keystore 签名；`local-release.sh` 通过（单测 275 项 0 失败 3 跳过），包内 dex 无读取不存在的静态字段；已发布为 GitHub Release v1.5.0，未安装 |
 | 上一包 | 1.4.9 / 2026110914，`out/FlymeFreeform-v1.4.9.apk`（2228527 字节），sha256 `21f38bc48df2ccec2715ec0559fbecd78772f63fabe8945736102f99140ad8f3`，release.keystore 签名；用户已自行装机，设置页打开即闪退（`NoSuchFieldError` `$stable`，见 2026110915），模块功能正常 |
-| 设备 | 1.4.10 / 2026110915（22:53 覆盖安装；冷启动设置页 377 ms，进程存活、crash 缓冲区无本包记录，进入「小窗设置」正常；其余页面未逐一点开）。未重启 system_server / 侧边栏：1.4.9 → 1.4.10 只改设置页，钩子仍是用户自行安装 1.4.9 后加载的那份；1.4.9 是否已重启生效未确认 |
+| 设备 | 1.4.10 / 2026110915（22:53 覆盖安装，设置页冷启动正常）。用户装 1.4.9 后已自行重启，系统部分运行的是 1.4.9 的钩子，与 1.4.10 相同（1.4.10 只改设置页），不需再重启 |
 | 设备另有 | 旧包 `io.github.hoerire.flymefreeform`（2026-11-08 记录仍在，未确认是否已卸载） |
-| GitHub | `ZaiLinn/FlymeFreeform` main 已推送；Release / 标签 v1.3.6、v1.3.7、v1.3.10、v1.4.8、v1.4.10（2026-11-09 发布，资产 `FlymeFreeform-v1.4.10.apk`，GitHub 记录的 sha256 与本地一致）；LSPosed 模块仓库未建 |
+| GitHub | `ZaiLinn/FlymeFreeform` main 已推送；Release / 标签 v1.3.6、v1.3.7、v1.3.10、v1.4.8、v1.5.0（2026-11-09 发布，Latest，资产 `FlymeFreeform-v1.5.0.apk`，GitHub 记录的 sha256 与本地一致）；v1.4.10 Release 与标签按用户要求已删除；LSPosed 模块仓库未建 |
 | 侧边栏样本 | 本地有 16.11.3、17.11.2 两个 APK（项目根目录，未入库）；`docs/sidebar-dex-resolution.md` 的回归样本为 16.14.0、16.14.6、17.9.2、17.9.8，尚未加入这两个 |
 
 **待验证**（1.4.10 装机后；先确认设置页能打开、各页不闪退，按进程；2026110914 新增回归与真机边界见 `docs/regression-2026-11-09.md`）
@@ -468,7 +469,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 **下一步**
 
-1. 确认 1.4.9/1.4.10 的钩子已生效（`MODULE_CONFIG_READY` 里的版本）；未生效时经用户同意后经 restart-gate 重启 system_server，再 `pkill -f com.coloros.smartsidebar`，按上面清单验收
+1. 按上面「待验证」清单在设备上验收（钩子已生效，用户自行重启过）；2026110916 装机后：进二级 / 三级页回桌面，`am force-stop` 或等后台冻结清理后再打开，应回到原页面；在首页按返回退出后再开是首页
 2. 把 16.11.3、17.11.2 加进 `docs/sidebar-dex-resolution.md` 回归样本
 3. 卸载旧包 `io.github.hoerire.flymefreeform`
 4. 待评估：滑选时显示应用名

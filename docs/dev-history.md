@@ -5,6 +5,14 @@
 
 ## 条目
 
+2026-11-09 提交与发布 1.5.0 / versionCode 2026110916，删除 v1.4.10：用户要求「把1,4,10删了,重新发布1.5.0」（此前说的「装」被打断，未安装）。提交 0916 代码（feat(ui): 设置页记住上次停留的页面）与版本 `f6601ad`（chore(release): 1.5.0），fetch 后快进推送 `a34a3ad..f6601ad`。`gh release delete v1.4.10 --cleanup-tag` 删除 Release 与远端标签，本地标签一并删除（`624f590` 提交仍在 main 历史中）。`gh release create v1.5.0 --target f6601ad8709d89e34c4f3a41284cfb0df1771f96`，资产 `out/FlymeFreeform-v1.5.0.apk`，GitHub digest 与本地 sha256 `9a836192…c43a89e` 一致，为 Latest；说明沿用 1.4.10 版并补「设置页记住上次停留的页面」，注明 1.4.9、1.4.10 未单独发布。随后提交本条文档。
+
+2026-11-09 构建 1.5.0 / versionCode 2026110916：用户要求「构建1.5.0,版本号最后一位到9了下一次构建就进一」。版本号规则补充：versionName 末位只用 0–9，到 9 后下一次构建进位（1.5.9 → 1.6.0），1.4.10 之后直接 1.5.0；已写入第六节与第九节第 11 条。`sh local-release.sh` 通过（starter 静态检查、单测 275 项 0 失败 3 跳过、assembleRelease、zipalign -P 16、release.keystore v1/v2/v3 签名与校验）。产物 `out/FlymeFreeform-v1.5.0.apk`，2228527 字节，sha256 `9a8361920fc5941cce7762bf0dd2214c97514d493210a02647b20dba6c43a89e`，aapt2 确认 versionName 1.5.0、versionCode 2026110916；包内 dex 无读取不存在的静态字段。较 1.4.10 只多 2026110916（设置页记住上次页面）。未安装、未提交、未推送。
+
+2026-11-09 源码 versionCode 2026110916：用户反馈设置页停在二级菜单后回桌面，过一会再打开变回首页（后台被墓碑冻结），要求修复。设备上排查：装有 Thanox；本应用在最近任务里有多个任务（#11、#27 隐藏，#32），`am kill` 后从桌面图标启动回到首页，但测试中途有一次人为点图标、且我先前用 `am start -n` 可能另开了任务，干扰未排除，未确认 rememberSaveable 恢复失败的具体原因。页面栈本身由 miuix `rememberNavBackStack`（rememberSaveable + kotlinx 序列化）保存，release 映射里 `AppRoute` 序列化器保留；冻结 / 清理工具以强行停止或移除任务结束进程时保存状态随之丢失。修复不依赖系统保存状态：新增 `NavStackStore`，`FlymeFreeformNavHost` 以 `snapshotFlow` 在页面栈变化时写本应用 SharedPreferences（`ui_state` / `back_stack`），`rememberNavBackStack` 的初始值改为读出的栈（有保存状态时仍以保存状态为准）；栈底不是首页、记录损坏时退回首页，旧路由 `EnvironmentScope` 恢复为 `ZoomOptions`。新增 `NavStackStoreTest` 3 项。单测 275 项（0 失败、3 跳过）、`minifyReleaseWithR8`、lintVitalRelease 通过，R8 产物 dex 无读取不存在的静态字段。未构建、未安装、未提交。
+
+2026-11-09 设备状态：用户说明装 1.4.9 后已自行重启，不需要代为重启。系统部分运行 1.4.9 的钩子，与 1.4.10 相同（1.4.10 只改设置页）。
+
 2026-11-09 提交与发布 1.4.10 / versionCode 2026110915：用户要求「提交发布github,发布release」。2026110902–0915 跨版本改同一批文件，无法按 versionCode 拆分，合为一次代码提交 `f7e62d8`（feat，正文按通知与跳转、开机与侧边栏、多用户、占用、设置页分组）+ 版本提交 `624f590`（chore(release): 1.4.10）。推送前 fetch，`origin/main` 无新提交，快进推送 `17f7078..624f590`。`gh release create v1.4.10 --target 624f590ea955cf0dfb3c90f799c7130615068f71`，资产 `out/FlymeFreeform-v1.4.10.apk`，GitHub 资产 digest 与本地 sha256 `11f868b3…9c9098` 一致；说明覆盖 1.4.8 以来全部改动（1.4.9 未单独发布）。随后提交本条文档。
 
 2026-11-09 安装 1.4.10 / versionCode 2026110915：用户要求「装」。`adb install -r out/FlymeFreeform-v1.4.10.apk`（设备 111680cd）成功，22:53 生效。清空 crash 缓冲区后 `am start -W` 冷启动 `MainActivity`，TotalTime 377 ms，进程存活，crash 缓冲区无本包记录；截图为「小窗设置」页正常显示。1.4.9 → 1.4.10 只改设置页（`AppIconLoader` 的 `@Stable` 与 keep 规则），未重启 system_server 与侧边栏。
