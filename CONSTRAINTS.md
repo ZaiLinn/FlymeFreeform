@@ -1,11 +1,11 @@
 # FlymeFreeform 实现说明
 
-源码版本 1.4.7 / versionCode 2026110850（1.4.7 包为 2026110849，含改色不刷新的问题）　包名 `io.github.zailinn.flymefreeform`
+源码、设备与 GitHub Release 均为 1.4.10 / versionCode 2026110915（`main` = `624f590` 已推送；1.4.9 未发布，其设置页闪退已在 1.4.10 修复）。包名 `io.github.zailinn.flymefreeform`
 源码 `ZaiLinn/FlymeFreeform`（维护者 ZaiLinn；fork 自 `Hoerire/FlymeFreeform` ← `Mangi-11/FlymeFreeform`，致谢见 README）
 工作副本 `~/Documents/Code/FlymeFreeform`（macOS），临时文件 `tmp/`；构建、签名与发布见第六节。
 包名于 2026-11-08 由 `io.github.hoerire.flymefreeform` 改为现名，设备上的旧包名模块需卸载后再装新包。
 
-本文只讲「代码怎么实现的」与「改动时不能碰的边界」。功能说明见 README。
+本文只讲「代码怎么实现的」「改动时不能碰的边界」与「现在到哪了」。功能说明见 README，逐次改动记录见 `docs/dev-history.md`。
 
 ---
 
@@ -24,8 +24,10 @@
    四段缺一项脚本就拒绝执行；`--pkg` 写设备上 APK 的 sha256 前缀，与设备实际安装的不符也拒绝；
    声明落 `tmp/restart-declarations.log`。例：
    `sh restart-gate.sh --changed "…" --pkg beec312c --verify "…" --logs "COORDINATOR_READY|SYSTEM_CATALOG_" -- "adb shell \"su -c 'setsid killall system_server'\""`
-5. 收工：回写第十节。**每次改代码、装包、重启后都要更新本文件**（用户 2026-11-08 要求）：
-   第十节的设备包与 sha256、待验证项、下一步，以及受影响的实现说明、参数、日志码
+5. 收工：**每次改代码、装包、重启后都要更新本文件**（用户 2026-11-08 要求）：
+   - 第十节改成最新状态（源码版本、未提交改动、设备包与 sha256、待验证、下一步），只写现状，不堆历史；
+   - 受影响的实现说明（第三、四节）、参数（第五节）、日志码（第七节）同步改；
+   - 本次改动的完整经过（原因、做法、验证结果）追加到 `docs/dev-history.md` 顶部。
 
 > 为什么写死成脚本：上下文压缩会丢掉「承诺过不做的事」，只留「现在做到哪了」。
 > 纪律必须能从磁盘读出来并拦得住动作，不能靠新会话的自觉。
@@ -36,34 +38,43 @@
 
 | 进程 | 安装器 | 负责 |
 |---|---|---|
-| system_server | `SystemServerHookInstaller` | 启动判定与参数注入、窗口数量上限与应用准入、窗外关闭、快速上滑、扇形协调器 |
-| com.android.systemui | `SystemUiHookInstaller` | 底角触摸监听、通知点击转场 |
+| system_server | `SystemServerHookInstaller` | 启动判定与参数注入、窗口数量上限与应用准入、窗外关闭、快速上滑、扇形协调器与目录、侧边栏目录请求端 |
+| com.android.systemui | `SystemUiHookInstaller` | 底角触摸监听、通知点击转场与「目标已在前台」判定 |
 | com.android.launcher | `LauncherHookInstaller` | 桌面侧底角触摸监听 |
-| com.coloros.smartsidebar:ui | `SidebarHookInstaller` | 「更多」面板接管、面板工具小窗注入 |
+| com.coloros.smartsidebar:ui | `SidebarHookInstaller` | 「更多」面板接管、面板工具小窗注入、固定项目录与启动的服务端 |
 
-跨进程通信：侧边栏走 Binder（`SidebarProtocol`），模块应用与框架走 SharedPreferences 与广播；system_server 向 SystemUI / 桌面广播手势许可（验证 SYSTEM_UID，共享发送身份）。**没有静态字段共享**。
+跨进程通信：「更多」面板走 Binder（`SidebarProtocol`），固定项目录走 Messenger（`SidebarEntryProtocol`）；模块应用与框架走 SharedPreferences 与广播；
+system_server 向 SystemUI / 桌面广播手势许可（验证 SYSTEM_UID，共享发送身份）。**没有静态字段共享**。
 
 ## 二、目录
 
 ```
 hook/                       各进程安装器与运行环境
-  launch/ActivityStarterZoomInjector.kt   读取快照与执行判定结果（342 行）
-  launch/decision/                      纯 Kotlin 启动判定、时间窗与规则
-  launch/StarterLaunchEnvironment.kt    惰性平台查询适配
-  launch/StarterSideEffects.kt           广播、面板、关窗重开的统一投递出口
-  launch/StarterLockProbe.kt             WM 锁探针与违规节流
-  launch/StarterQueryCache.kt            PM 查询异步缓存
+  NotifBundleHook.kt                      通知点击写小窗参数、前台全屏判定（SystemUI）
+  launch/ActivityStarterZoomInjector.kt   读取快照与执行判定结果
+  launch/decision/                        纯 Kotlin 启动判定、时间窗与规则（无 android.*）
+  launch/StarterLaunchEnvironment.kt      惰性平台查询适配
+  launch/StarterSideEffects.kt            广播、面板、关窗重开的统一投递出口
+  launch/StarterLockProbe.kt              WM 锁探针与违规节流
+  launch/StarterQueryCache.kt             PM 查询异步缓存（预热、按启动补种）
+  launch/StarterRequestReplay.kt          关窗后复制 Request 重开
   launch/ZoomLaunchSpec.kt                小窗参数契约
   launch/InterAppLaunchTracker.kt         跳转关系记录，识别返回
   launch/FlexibleWindowLimitHook.kt       数量上限与应用准入
-  launch/NotificationZoomSourceHook.kt    通知来源标记
 platform/coloros/           ColorOS 私有接口封装，全部反射
   ColorOsFreeformCoordinator.kt           system_server 内扇形总协调
+  ColorOsAppCatalog.kt                    扇形与「更多」的条目目录（system_server 后台线程）
+  ColorOsEntryCatalogBroker.kt            固定项侧边栏目录：请求、重试、本地副本（system_server）
+  ColorOsSidebarEntryConnection.kt        与侧边栏的常驻 Messenger 连接（system_server）
+  SidebarCatalogStore.kt                  侧边栏目录本地副本 /data/system/flymefreeform
+  ColorOsSidebarEntryEndpoint.kt          目录与启动服务端（侧边栏进程）
+  ColorOsSidebarEntries.kt                读侧边栏原生条目、分身核对、调用原生路由（侧边栏进程）
+  SidebarEntryKind.kt                     原生条目 → 工具 / 快捷方式 / 特殊入口 / 分身
   ColorOsAllApps*.kt                      「更多」面板窗口与内容（侧边栏进程）
   PanelToolLaunchBridge.kt                面板工具小窗参数注入（侧边栏进程）
   FavoriteGroupInjector.kt                面板数据原地改写、分组标题角色登记
   PanelGroupLabels.kt                     分组标题文案（收藏/最近，随系统语言）
-  ColorOsAppCatalog.kt                    扇形与「更多」的条目目录（system_server 后台线程）
+  SidebarDexQuery.kt / LauncherDexQuery.kt  DexKit 查混淆符号，结果按 APK 身份缓存
 gesture/                    纯逻辑：手势状态机、命中计算、多圆弧容量（RadialArcPlan）
 window/                     浮层自绘与动画
 ui/                         Compose + Miuix 设置界面
@@ -77,13 +88,14 @@ config/ apps/ framework/ log/
 | 扇形呼出、命中半径 | `gesture/CornerGestureEngine.kt`、`RadialGeometry.kt` |
 | 多圆弧容量与间距 | `gesture/RadialArcPlan.kt` |
 | 扇形放哪些应用、补位、图标加载 | `platform/coloros/ColorOsAppCatalog.kt`、`apps/AppSelectionPolicy.kt` |
+| 固定项里的侧边栏工具 / 快捷方式 / 分身 | `ColorOsEntryCatalogBroker` → `ColorOsSidebarEntryConnection` → `ColorOsSidebarEntryEndpoint` → `ColorOsSidebarEntries` |
 | 扇形应用页（按圈分页） | `ui/PinnedAppsScreen.kt` |
 | 扇形浮层 | `window/CornerRadialOverlayView.kt` |
 | 角区触摸窗口 | `hook/SystemUiCornerInputMonitor.kt` |
 | 「更多」面板 | `platform/coloros/ColorOsAllApps*.kt` |
 | 面板工具小窗 | `PanelToolLaunchBridge.kt` + `SidebarHookInstaller` |
 | 通知点击 | `hook/NotifBundleHook.kt` |
-| 各类启动判定 | `hook/launch/ActivityStarterZoomInjector.kt` |
+| 各类启动判定 | `hook/launch/decision/LaunchDecider.kt`（判定）、`ActivityStarterZoomInjector.kt`（读快照、执行） |
 | 数量上限与准入 | `hook/launch/FlexibleWindowLimitHook.kt` |
 | 小窗关闭（窗外单击 / 双击、双击横条） | `hook/OutsideTapCloseHookInstaller.kt` |
 | 快速上滑 | `hook/HandleSwipeUpHookInstaller.kt` |
@@ -91,12 +103,6 @@ config/ apps/ framework/ log/
 | 设置界面 | `ui/` 下对应 Screen |
 
 ## 三、各功能怎么实现的
-
-**框架服务恢复**　FrameworkConnectionRepository 在后台串行队列中按服务 Binder 身份去重，优先最新绑定；监听 linkToDeath，并在 reconcile 与写入前剔除死亡服务、清理活动连接与缓存、激活剩余候选。Service 102 未公开 Binder，反射 mService 字段由 keep 规则保护；不可反射时只读 apiVersion，只有 DeadObjectException 视为死亡，其他错误保留原诊断；多个不同有效 Binder 仍禁止写入。
-
-
-**starter 锁安全**　副作用经 StarterSideEffects 离开 starter 线程；面板即时收起改为主线程队首，延迟收起仍为 60 ms。StarterLockProbe 从 mService.mGlobalLock 读取弱引用，执行时以 Thread.holdsLock 检测；未知只报一次，违规同名每 10 秒最多一次，不抛异常。同步 zoom 启动与窗口状态查询为既有厂商白名单。PM 查询改为专用工作线程缓存（含包变化失效），冷缓存按未知放行；控制中心来源在当前 execute / resolveActivity 阶段以探针确认未持 WM 锁后读取，仅在本次启动内传递，持锁且没有本次观察时保守放行；锁屏只读 ModuleEnvironmentState 的广播缓存，不在钩子里刷新厂商 Keyguard 实现。
-
 
 **扇形菜单**　system_server 内的协调器监听底角指针，手势逻辑在 `CornerGestureEngine`（纯状态机，可单测），
 命中计算在 `RadialGeometry`；浮层由 `CornerRadialOverlayView` 自绘，窗口类型 `TYPE_INPUT_METHOD_DIALOG`(141000)，
@@ -113,20 +119,51 @@ config/ apps/ framework/ log/
 用 `saveLayer` + `SrcIn` 把渐变填进模板，模板按源图标跨次呼出缓存（`MorePlateMasks`）；取不到模板时退回 0.25 圆角方形。
 内侧圆弧每向内一圈乘步进——两条圆弧 0.92，三四条 0.95（用户定）；角落空白区与设置页命中预览同样按最内圈缩小后的直径。
 屏幕中央所选应用卡片（开关 `radial_center_preview` 默认关、`radial_center_label` 默认开）：`CornerRadialOverlayView.drawCenterPreview` 在扇形画布上画，
-不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长 1.5×（最长 1024 px，默认尺寸单张约 1.6 MB）从 `DENSITY_XXXHIGH` 图标经 `ColorOsRadialIconRenderer.shapedIcon(source, sizePx)` 按预览边长原生塑形后重画（再走 `IconShapes`，参数同扇形），不读 APK 原始资源，不放大扇形那份位图，缓存当前扇形全部条目（目录加载后后台预取缺的、裁掉不在扇形里的，安全上限 48）；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
+不新开窗口，只画图标与应用名、不加底板（用户要求），应用名白字加阴影；图标经 `AppCatalogSnapshot.previewIconLoader` 按目标边长 1.5×（最长 1024 px，默认尺寸单张约 1.6 MB）从 `DENSITY_XXXHIGH` 图标经 `ColorOsRadialIconRenderer.shapedIcon(source, sizePx)` 按预览边长原生塑形后重画（再走 `IconShapes`，参数同扇形），不读 APK 原始资源，不放大扇形那份位图，缓存当前扇形条目（目录加载后后台预取缺的、裁掉不在扇形里的）：扇形里的固定项全部常驻 `pinnedPreviews`、不受上限淘汰（用户决定固定项都保持高清，18 项最大尺寸约 72 MiB）；补位项进按字节上限 32 MiB 的 `LruCache`，只预取放得下的几项，其余选中时现画；浮层收起即清空 `previewImages`；同一条目的在途任务合并，执行前再查缓存，选中项排在图标线程最前（`iconJobs` 双端队列）；侧边栏工具/快捷方式没有高清来源，仍用 96 px 那份。布局见 `RadialCenterPreview`（图标边长取设置 `radial_center_size_dp` 48–160、默认 96 dp，不超过安全区短边 45%；应用名 16 sp 随图标按比例缩放、限 12–24 sp，最宽 60% 安全区宽度省略），
 淡入淡出 120 ms、换项从 0.94 弹回；选中「更多」不显示。开关与大小经 `begin(centerPreview, centerLabel, centerSizeDp)` 每次呼出从 `lastSettings` 传入，不依赖目录快照。
 
 **扇形目录**　`ColorOsAppCatalog` 在 system_server 的单线程执行器里工作，一次刷新分两步发布：
-① 只为扇形条目（≤18 项）取名称、图标并塑形，立即发布；② 读全部名称、排好「更多」顺序后发布（未画好的图标用
-`PanelIconPlaceholder`，面板格子进入视野时经 `panelIconLoader` 在独立线程按需取图），随后后台补齐全部图标再发布一次。
-应用列表只在 reloadApps（解锁恢复、目录为空）或包广播（`invalidatePackage`）时重读；名称与图标按条目缓存，
-只丢弃变动的包。增减固定项**不重读应用列表**。禁止回到「每次刷新把全部应用图标画成位图」的做法：
+① 只为扇形条目（≤18 项）取名称、图标并塑形，立即发布；② 读全部名称、排好「更多」顺序后发布。面板条目一律用
+`PanelIconPlaceholder`，格子进入视野时经 `panelIconLoader` 在独立线程按需取图，结果进 8 MiB `LruCache`（`iconCache`）；
+**不再后台补齐全部面板图标**：内置「更多」面板只在侧边栏面板打不开（`Outcome.Fallback`）时才用，面板条目与快照都不持有真图标。
+选中「更多」时（`showMorePanel`）先经 `PanelIconLoader.prefetch` 预画第一屏及相邻缓冲行（`PanelVisualMetrics.visibleItemRange`，量不出布局取前 24 项），
+排在看得见的请求之后；侧边栏面板正常打开时这批图标留在缓存，下次命中。
+扇形应用条目的塑形图标在 `shapedCache`（访问顺序，最多 32 项）。目录按当前前台用户读取（`CurrentUser`，system_server 自身是 0 号用户），
+`ACTION_USER_SWITCHED` → `invalidateUser` 丢弃全部名称、图标、预览与侧边栏条目。每次加载开头取一次用户号，索引、最近任务、使用统计、
+桌面解析都按它读（`userContext`：`createContextAsUser`，AOSP 的 `getRecentTasks` / `queryUsageStats` 按 context 用户号查询），快照带 `userId`；
+协调器只采用、只保存 `userId == currentUserId` 的快照，切换时清空当前快照与待用副本、读新用户的副本，侧边栏目录 `userSwitched` 取消在途读取、清空条目、换新用户副本。
+应用列表只在 reloadApps（目录为空）或包广播（`invalidatePackage`）时重读，恢复手势（解锁、横屏 / 游戏模式结束）不再重读；名称与图标按条目缓存，
+只丢弃变动的包；切换系统语言（`ACTION_LOCALE_CHANGED` → `invalidateLabels`）丢弃全部名称。字母顺序（`alphabeticalOrder`）按应用列表、`labelEpoch` 与语言缓存，
+前台切换不重排；「更多」顺序与上次相同时不重建、不重发面板（`lastPanelTargets`）。增减固定项**不重读应用列表**。禁止回到「每次刷新把全部应用图标画成位图」的做法：
 本机 537 个桌面入口，那样增减一项要等数秒、开机后头几次呼出是空扇形。
 补位来源 `radial_fill_source`：最近使用（`getRecentTasks`）、最常使用（`UsageStatsManager` 近 7 天前台时长，
 排除桌面与本模块，缓存 10 分钟）、不补位（未自定义的内圈留空，默认圆弧仍按最近使用）。
 补位跳过当前前台应用：`ModuleEnvironmentState.observeForeground`（回调处在 ATMS 锁内，只投递）→ 协调器
-`onForegroundChanged` → `ColorOsAppCatalog.updateForeground` + 刷新；固定项不受影响。
+`onForegroundChanged` → `ColorOsAppCatalog.updateForeground` + 刷新；固定项不受影响。扇形全由固定项占满（外圈固定项不少于数量上限，
+内圈都已自定义或不补位，见 `radialDependsOnForeground`）时前台切换不刷新，只记 `panelOrderStale`，下次呼出时后台补刷一次供内置面板使用。
 「更多」顶部顺序与补位依据一致（最常使用时按常用）；开机后第一次刷新在读全部名称前先发布这批应用，面板不空等。
+开机不空扇形：每次发布扇形后（合并 10 s）把扇形条目（名称、塑形图标、角标、分圈数）写 `/data/system/flymefreeform/radial_snapshot_u<用户>.bin`
+（`RadialSnapshotStore`，单项 PNG 按位图对象复用、摘要相同不写），协调器 `start()` 读出后、只在决定扇形的设置（`RadialSnapshotStore.Key`：固定项、内圈、
+数量上限、圆弧条数、图标形状、补位来源）一致时采用为 `provisional` 快照；真实目录发布即替换，provisional 期间照常刷新。
+呼出时扇形为空，目录一发布就经 `updateRadialAppearance` → `replaceEmptyCatalog` 整体补进当前浮层并按手指位置重新判定。
+条目相同时 `adoptSameTargets` 整份换上新目录（高清与面板加载器、面板列表、分圈），保留选中与手势；高清图只在条目图标换了时丢弃。
+浮层的 `catalog` 存在 State（`referentialEqualityPolicy`）里，换目录界面即重组。内置面板已显示时只在面板为空或顺序相同时换列表（`updatePanelCatalog`）。
+内置面板的应用图标只随格子留在组合里：格子离开即从 `panelImages` 移除，滚回时经 `PanelIconLoader.cached` 当场取缓存，浮层不再持有浏览过的全部图标。
+
+**固定项里的侧边栏条目**　工具、快捷方式、特殊应用入口与分身应用由侧边栏进程提供，system_server 只拿显示用的目录，启动仍交回侧边栏原生路由。
+链路：`ColorOsEntryCatalogBroker` → `ColorOsSidebarEntryConnection`（provider `bindServiceForTransferDock` 唤醒 → bindService → LIST，连接建立后常驻）
+→ 侧边栏 `ColorOsSidebarEntryEndpoint`（每 50 ms 查一次面板就绪）→ `ColorOsSidebarEntries.load` → 逐项 ITEM、最后 COMPLETE；单次 7 s 超时，最多 256 项，图标压到 96 px。
+目录 = `EntryBeanHelper.getAllAppListForTool`（工具）+ `getShownShortcuts`（快捷方式、category 11 特殊入口）+ `getShownApps` 中的分身。
+分身判定（`SidebarEntryKind.fromNative`）不只看侧边栏的 `isCloned()`：该方法只在 `OplusOSVERSION >= 38` 时问 `OplusMultiAppManager.isMultiAppUserId`，否则只认用户 999；
+所以应用条目（type 2、非 category 11）的 `getMutiUserId` 有效且不同于当前用户也算分身，再用 `LauncherApps.getActivityList(包, 该用户)` 核对确有入口
+（activity 不符时取该用户下该包第一个入口，与侧边栏 `findLauncherActivityInfo` 一致），查不到就不进目录。
+启动：EXECUTE 时工作线程 `resolve` 重新定位 bean，主线程调一次 `PageRoutUtils.startSysTool / startShortcut / startNormalApp`；`startNormalApp` 按 bean 的 `getMutiUserId` 启动，不依赖 `isCloned`。
+重启后不空等：每次读到完整目录写一份 `/data/system/flymefreeform/sidebar_catalog_u<用户>.bin`（`SidebarCatalogStore`，AtomicFile，内容相同不写），
+`start()` 先显示副本、真实目录到达后整体替换；副本只用于显示。保存前先与上次写入或读出的条目逐项比对（名称、包名、`Bitmap.sameAs`），相同则不编码 PNG。
+读取失败按 2 s、5 s 各重试一次，主动取消不重试。包变化（`packageChanged`）不清空目录：卸载的包立即移除其条目，其余照常显示，
+有侧边栏固定项时后台重读（读取途中再有变化，完成后补读一次）。设置页请求 500 ms 内过密时回 `BUSY`，客户端 600 ms 后用同一 ID 重发；
+设置页暂停不取消进行中的请求，恢复时合并。侧边栏端 `ColorOsSidebarEntries` 每次请求新建（bean 只在本次有效），反射元数据按 ClassLoader 单格复用。
+热连接在使用期间与锁屏、横屏、游戏模式暂停时保留；模块关闭时 `entryCatalog.release()` 解除绑定。侧边栏进程读的用户设置 XML 按本进程用户号取 `/data/user/<用户>/…`。
 
 **「更多」面板**　不替换原厂面板，而是接管它的内容视图：`ColorOsAllAppsContent` 构造侧边栏自己的面板类，
 `FavoriteGroupInjector` 在 `bindAdapter` 时**原地改写同一个 ArrayList**（不换对象、不 notify）；
@@ -147,7 +184,9 @@ config/ apps/ framework/ log/
 内置兜底面板由协调器常驻接收器在 `morePanelActive` 时调 `CornerRadialOverlayView.dismissPanel()`。
 只认 reason `homekey`（回桌面键）与 `recentapps`（本机手势上滑回桌面发的是它），其余 reason 不收起。
 
-**面板工具小窗**　付款码、扫一扫这类工具由侧边栏自建 Intent，经 `AppPlatformUtils.n(Intent, Bundle, UserHandle)`
+**面板工具小窗**　付款码、扫一扫这类工具由侧边栏自建 Intent，经 `AppPlatformUtils` 的 startActivityAsUser 包装
+（混淆名随版本变：16.11.3 为 `m(Intent, Bundle, UserHandle)`，16.14 / 17.9 为 `n(...)`，17.11.2 为 `n(Intent, Bundle, UserHandle, ze.l)`
+另带 synthetic 桥 `o`；按「静态、非 synthetic、前三参为 Intent/Bundle/UserHandle、唯一」取方法，不按名字）
 交给系统 uid 代发，界面进程无法重发（目标是第三方未导出 Activity）。做法是点击前登记目标包，
 在代发瞬间把 zoom 参数**就地并入系统已建好的 Bundle**，启动链路不变。
 
@@ -155,10 +194,24 @@ config/ apps/ framework/ log/
 （类名带 `Impl`）：依次移除横幅 → 剥离 `android:activity.remoteTransition` → 写窗口参数 →
 非横幅时调 `collapseShadeForActivityStart()`。横幅实例早于钩子创建，需同时钩 `HeadsUpManagerImpl.showNotification` 取 thisObject。
 
+**通知目标已在前台**（`NotifBundleHook.targetInForeground`）　点击通知（面板与横幅同一入口）时，
+若通知所属应用正全屏显示在前台，就按系统默认全屏跳转，不开小窗。所属包取 `StatusBarNotification` 的发布包与 contentIntent 的创建包；
+前台取 SystemUI 内 `getRunningTasks(6)` 第一个可见、窗口模式 1（全屏）的任务的顶层包，小窗（100）、分屏等任务跳过，桌面算普通全屏任务。
+成立时 `rewriteBundle` 不写小窗参数、不移横幅、不剥转场，只写 AOSP 键 `android.activity.windowingMode=1`（`ZoomLaunchSpec.markFullscreen`）；
+system_server 见 SystemUI 发起且启动参数写明全屏（`LaunchSnapshot.optionsFullscreen`）即不改写，见第四节第 1 段。查询失败按不成立处理，保持小窗。
+通知发布包在 `LaunchRules.SKIP_TARGETS`（系统界面、设置、权限控制器）内时同样不改写，与其他入口一致（原先只跳过 systemui / android）。
+SystemUI 侧不接管 `onNotificationClicked` 一类点击入口（见 `SystemUiHookInstaller` 注释与第九节第 7 条）；原未安装的 `NotificationZoomSourceHook` 已删除。
+
 **双击横条关闭**　「小窗关闭」第 4 项（`OutsideTapCloseMode.CaptionDoubleTap`，存储值 3），与窗外单击 / 双击互斥。
 钩 `FlexibleTaskCaptionView.onDoubleTap`：原方法只处理迷你小窗（退出迷你态或与前台交换），普通小窗返回 false；
 只在原方法返回 false、且横条所属任务是普通小窗（柔性状态 1）时调 `exitFlexibleTask(task, true, 0, 0)` 关闭该任务。
 该模式下 `closesOnOutsideTap` 为假，横条触控区不扩到窗外，避免双击窗外也落到横条上被当成关闭（参考 2237742261/FlymeFreeform 的同类实现）。
+
+**设置页应用列表**　`LauncherAppRepository` 只保存组件与名称，图标是 `AppIconPlaceholder`；行进入视野时经 `LocalAppIcons`（`AppIconLoader`，
+后请求先画、离开即取消，结果已按外形处理，`LruCache` 12 MiB）按需加载。包变化时 `AppIconLoader.version` 递增（广播时一次、重读入口后再一次），
+可见行以它为键重新取图，作废前开始的任务既不进缓存也不回调。包变化只重读该包；切换语言丢弃全部名称；状态 Loading / Ready / Failed，
+失败时选择页显示重试，读完为空显示「没有可添加的应用」。方形模板 `squareMask` 由仓库在全量读取后取前 30 个应用。侧边栏条目的塑形结果放进 `ShapedIconCache`（4 MiB，按源图身份）。
+排除列表选择页逐行懒加载（`CardSegment` 用 `squircleSurface` 分角给半径，与 miuix Card 同一种平滑圆角）。搜索（`AppSearch`）去首尾空格，名称、包名包含即命中；查询为纯字母且名称含汉字时另按 ICU 全拼 / 首字母匹配，后台过滤。
 
 **设置广播**　设置页每次改设置都发 `ACTION_PINNED_TARGETS_CHANGED`，带完整快照（`SettingsTransfer.EXTRA_SETTINGS`，
 由 `ModuleSettingsSnapshot.writeTo/readFrom` 编解码，新增设置无需另登记），发往 android、smartsidebar、systemui、launcher 四个进程，
@@ -169,6 +222,17 @@ SystemUI 在 Application.onCreate、桌面在 Application.onCreate 登记接收�
 普通小窗底部横条上滑入口、`FlexibleWindowManagerService.getMaxWinNum`；应用准入钩三类共 9 个
 `isSupportFlexibleWindow`（FlexibleWindowManagerService 2、FlexibleTaskController 3、FlexibleWindowUtils 3）。
 数量上限取 0 =「跟随系统」时 `getMaxWinNum` 直接 `proceed`，不覆盖。实测装了 LuckyTool（多浮窗上限 200）时生效的是 LuckyTool 的值，即使本模块设为 5 也压不住，原因未核实（可能走的不是同一条判定路径，或钩子顺序在外层）。
+
+**暂停条件**　`ModuleEnvironmentState` 维护锁屏、横竖屏、游戏模式、前台包；前台包来自
+`ActivityTaskManagerService.setLastResumedActivityUncheckLocked`。横屏与游戏模式只暂停扇形呼出，
+小窗能力用不含暂停的 `isModuleActive()` 判定。
+
+**框架服务恢复**　FrameworkConnectionRepository 在后台串行队列中按服务 Binder 身份去重，优先最新绑定；监听 linkToDeath，并在 reconcile 与写入前剔除死亡服务、清理活动连接与缓存、激活剩余候选。Service 102 未公开 Binder，反射 mService 字段由 keep 规则保护；不可反射时只读 apiVersion，只有 DeadObjectException 视为死亡，其他错误保留原诊断；多个不同有效 Binder 仍禁止写入。
+
+**starter 锁安全**　副作用经 StarterSideEffects 离开 starter 线程；面板即时收起改为主线程队首，延迟收起仍为 60 ms。StarterLockProbe 从 mService.mGlobalLock 读取弱引用，执行时以 Thread.holdsLock 检测；未知只报一次，违规同名每 10 秒最多一次，不抛异常。同步 zoom 启动与窗口状态查询为既有厂商白名单。PM 查询改为专用工作线程缓存（含包变化失效），冷缓存按未知放行；控制中心来源在当前 execute / resolveActivity 阶段以探针确认未持 WM 锁后读取，仅在本次启动内传递，持锁且没有本次观察时保守放行；锁屏只读 ModuleEnvironmentState 的广播缓存，不在钩子里刷新厂商 Keyguard 实现。
+PM 缓存（`StarterQueryCache`）开机后的冷窗口靠两处缩短：预热先单查 SystemUI 与桌面，再读全量列表；每次读启动快照时 `seedFromLaunch` 用 Request 已解析的
+`ActivityInfo.applicationInfo` 补入目标「是否第三方 + uid」，发起方为 SystemUI / 桌面且 callingUid == realCallingUid 时记下其 uid（PM 结果到位后以 PM 为准）。uid 一律按 appId（去用户号）保存，
+`LaunchDecider.sameApp` 把启动里的完整 uid 取 appId 后再比（非主用户下桌面是 u10_aXXX）；uid 原值不改。
 
 **超限关窗（不贴边）—— 已移除，不要再加回来**
 
@@ -190,19 +254,14 @@ SystemUI 在 Application.onCreate、桌面在 Application.onCreate 登记接收�
 要重新做，先满足三条前提：拿到当前焦点任务（钩 `updateTaskMaxNumWhenFocusChanged` 的第二个参数）、
 一次只关一个并带冷却、以及一套能稳定复现的验收脚本；否则不要动系统默认的浮标行为。
 
-**暂停条件**　`ModuleEnvironmentState` 维护锁屏、横竖屏、游戏模式、前台包；前台包来自
-`ActivityTaskManagerService.setLastResumedActivityUncheckLocked`。横屏与游戏模式只暂停扇形呼出，
-小窗能力用不含暂停的 `isModuleActive()` 判定。
-
 ## 四、启动判定（`reasonFor`）
 
 判定已迁入 `hook/launch/decision/LaunchDecider`，无 android.* 依赖；输入为 LaunchSnapshot / LaunchEnvironment，状态为 LaunchMemory。判定只读状态，返回的日志及返回指纹更新由执行层按顺序应用；接管成功后才记链接、目标和跳数。旧函数与新函数一一对应见 `docs/starter-decision-migration.md`，InterAppLaunchTracker 保留为共享同一份内存的薄包装。
 
-
 全部启动改写受单一开关 `zoomLaunch` 控制：`reasonFor` 首行读它，关闭即返回 null，任何入口都不改写。
 八段判定，先命中先返回：
 
-1. 来源标记（SystemUI 写入的通知标记、控制中心磁贴）
+1. 来源标记（控制中心磁贴；通知来源 extra 目前无写入方）；SystemUI 发起且启动参数写明全屏（通知目标已在前台）时直接放行全屏，必须先于第 3 段；抢占路径的 SystemUI 分支同样不接管
 2. 排除列表与「返回发起方」识别 —— 放行
 3. 通知点击（发起方 SystemUI + PendingIntent）
 4. 文件选择 —— 始终全屏
@@ -230,6 +289,11 @@ SystemUI 在 Application.onCreate、桌面在 Application.onCreate 登记接收�
 `LAUNCHER_CARD_SKIP` = SKIP_TARGETS + 安装器 + 分享面板 + 桌面自身 + 安全中心：桌面长按菜单的
 「编辑」「上锁」因此不会被开成小窗。
 
+**执行层**（`ActivityStarterZoomInjector`）　原启动参数只用于判定：`Request.activityOptions` 是 SafeActivityOptions、没有 `toBundle()`，
+`optionsBundle` 先试 toBundle，不行按 AOSP `mergeActivityOptions` 顺序合并 `mOriginalOptions`、`mCallerOptions`。原参数已带小窗参数时走 `ZOOM_NATIVE_CHANNEL_<reason>`，不再覆盖。
+注入与延迟重开只写纯小窗参数（`ZoomLaunchSpec.bundle(null)`），**不并入原参数**：原参数可能带远程动画、launchTaskId 等受限字段，以 callingUid 重新包装会在 SafeActivityOptions 权限检查抛 SecurityException。
+写入用 `setActivityOptions(Bundle, pid, uid)`，不可用时以 `SafeActivityOptions.fromBundle(Bundle, pid, uid)` 写 `Request.activityOptions`；两种都不可用不接管（`starter.mOptions` 在钩子时刻为 null、之后会被覆盖，写它无效）。
+
 ## 五、关键参数
 
 - 扇形命中半径 40–140 dp，默认 100 dp；选中放大 1.2×
@@ -241,6 +305,8 @@ SystemUI 在 Application.onCreate、桌面在 Application.onCreate 登记接收�
 - 震动：同圈换格 `CLOCK_TICK`（80 ms 节流）；跨圈换格 `GESTURE_THRESHOLD_ACTIVATE`（不节流），圈号见 `RadialArcPlan.arcOfIndex`
 - 跨圈移动固定项走 `FrameworkConnectionRepository.moveTargetToArc`（`ArcPins.move`），两圈一次提交、一次广播；含未启用的圈
 - 命中范围预览按 `RadialArcPlan.expectedArcCounts`（默认圆弧按数量上限，内圈按固定项 / 容量 / 不补位为 0）
+- 缓存上限：中央预览补位项 32 MiB、固定项不设上限，面板图标 8 MiB，扇形塑形图标 32 项（system_server）；设置页应用图标 12 MiB、塑形图标 4 MiB（App 进程）
+- 侧边栏目录请求节流 500 ms（回 `BUSY`），客户端重发间隔 600 ms
 - 双击关窗阈值 `ViewConfiguration.getDoubleTapTimeout()` = 300 ms
 - 面板数据原地改写同一个 ArrayList、不换对象；原厂源头重灌（见第三节）返回后才换回「收藏 + 最近」并 notify
 
@@ -255,6 +321,7 @@ SystemUI 在 Application.onCreate、桌面在 Application.onCreate 登记接收�
 
 **版本号**（用户 2026-11-08 定）：每次代码更新 `flymeFreeformVersionCode` +1；每构建一次 APK，`flymeFreeformVersionName` 末位 +1（1.3.7 → 1.3.8），
 构建前改好，产物名随之变化，同一版本名不出两个包。两项都在 `gradle.properties`。
+versionCode 格式为 `yyyyMMdd` + 两位当日序号，跨日时日期取当天、序号从 01 起（2026110852 → 2026110901，仍单调递增）。
 
 **构建**　一律用 `local-release.sh`（只在用户明确说「构建」之后）：
 
@@ -284,11 +351,10 @@ sh local-release.sh --archive     # 另把源码打包到 tmp/ 并 adb push 到 
 - `upstream/main` 已被 Hoerire 强推为 `f6d03ac`，本地历史仍基于旧的 `87c0aaa`，两者不共享后续提交
 - 推送遇 `send-pack: unexpected disconnect` 时加 `-c http.postBuffer=524288000 -c http.version=HTTP/1.1` 重试
 - 提交按改动拆分；同一文件多次修改又没有中间快照时，只能按文件分组提交
+- `local-release.sh`、`restart-gate.sh` 列入 `.gitignore`，不随仓库分发
+- 关于页只保留一个「项目地址」→ `ZaiLinn/FlymeFreeform`；上游地址与致谢在 README
 
 ## 七、日志与排障
-
-starter 新日志（WARN、常开）：STARTER_LOCK_PROBE_UNAVAILABLE（无法读取 WM 锁）、STARTER_LOCK_VIOLATION_<name>（在 WM 锁内执行副作用，10 秒节流）、STARTER_EFFECT_FAILED_<name>（投递任务运行时异常）。
-
 
 日志只在 `/data/adb/lspd/log/modules_*.log`。诊断消息一律 lambda 传入 `ModuleLog.debug(tag) { }`，
 详细日志关闭时不构造字符串、不读状态；常开 INFO 只留给 `*_INSTALLED` / `*_READY`。
@@ -305,9 +371,14 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 | 启动未接管 | `ZOOM_DECISION_*_okfalse` 的 `cp` / `rr` / `rt` / `tg` |
 | 注入成功 | `ZOOM_INJECTED_<launcher_card \| launcher_shortcut \| launcher_settings \| inter_app \| system_launch \| notification \| control_center>` |
 | 磁贴长按 | `ZOOM_PREEMPTED_<包名>` |
-| 面板工具 | `PANEL_TOOL_HANDLED_<alias>` 后紧跟 `PANEL_TOOL_ZOOM_<包名>` |
+| starter 锁与副作用（WARN、常开） | `STARTER_LOCK_PROBE_UNAVAILABLE`（读不到 WM 锁）、`STARTER_LOCK_VIOLATION_<name>`（在 WM 锁内执行副作用，10 秒节流）、`STARTER_EFFECT_FAILED_<name>`（投递任务运行时异常） |
+| starter 缓存预热 | `STARTER_QUERY_WARMUP_READY_PRIORITY_<ms>MS_APPS_<ms>MS_<n>_OWNERS_<ms>MS`（INFO，自首次触发预热起算） |
+| 原参数已是小窗 | `ZOOM_NATIVE_CHANNEL_<reason>`（不覆盖） |
+| 面板工具 | `PANEL_TOOL_HANDLED_<alias>` 后紧跟 `PANEL_TOOL_ZOOM_<包名>`；安装时 `PANEL_TOOL_ZOOM_INSTALLED_<方法名>_<参数个数>`，找不到为 `PANEL_TOOL_ZOOM_UNAVAILABLE`；排除列表内 `PANEL_TOOL_ZOOM_SKIPPED_EXCLUDED_<包>` |
 | 面板点击 | `PANEL_CLICK` 的 index / alias / aligned / size / query |
 | 通知 | `NOTIF_BUNDLE_ZOOM` 的 dropped；钩子缺失看 `NOTIF_BUNDLE_HOOKED_*` |
+| 侧边栏目录耗时 | system_server：`SIDEBAR_ENTRY_LIST_READY_cold<0\|1>_prepare<ms>_bind<ms>_first<ms>_total<ms>_n<n>`（INFO，各段相对发起时刻，-1 为未到达；超时为 `SIDEBAR_ENTRY_TIMEOUT_LIST_` 加同样各段）；侧边栏进程：`SIDEBAR_ENTRIES_LIST_READY_wait<ms>_load<ms>_send<ms>_n<n>`（等面板就绪 / 读目录含画图标 / 逐项发送）；重试 `ENTRY_CATALOG_RETRY_<次>_IN_<ms>MS`；本地副本 `SIDEBAR_CATALOG_CACHE_READY_<n>_<ms>MS`，异常 `SIDEBAR_CATALOG_CACHE_*_FAILED` / `_INVALID`；扇形副本 `RADIAL_SNAPSHOT_READY_<n>_<ms>MS`、采用 `SYSTEM_RADIAL_SNAPSHOT_ADOPTED_<n>`（详细日志），异常 `RADIAL_SNAPSHOT_*_FAILED` / `_INVALID`；语言 / 切换用户广播注册失败 `LOCALE_OBSERVER_UNAVAILABLE` / `USER_SWITCH_OBSERVER_UNAVAILABLE` |
+| 通知目标已在前台 | SystemUI：`NOTIF_FOREGROUND <前台包> match=<true\|false>`、`NOTIF_BUNDLE_FOREGROUND_FULLSCREEN <包>`；system_server：`ZOOM_SKIP_SYSTEMUI_FULLSCREEN_<包>`；查询异常 `NOTIF_FOREGROUND_QUERY_FAILED`（WARN）；系统包跳过 `NOTIF_BUNDLE_SKIPPED_SYSTEM <包>` |
 | 横幅未移除 | `NOTIF_HEADS_UP_MANAGER_NULL`（未取到实例）/ `NOT_HEADS_UP`（时机过晚） |
 | 扇形被拦 | `SYSTEM_GESTURE_REJECTED_<原因>` |
 | 扇形目录耗时 | `SYSTEM_CATALOG_RADIAL_<ms>MS_<项数>`（扇形就绪）、`SYSTEM_CATALOG_PANEL_ORDER_<ms>MS_<n>`（面板可开）、`SYSTEM_CATALOG_PANEL_<ms>MS_<n>`（图标补齐）；`SYSTEM_CATALOG_ICON_MISSING_<n>` 表示扇形图标读取失败、退回按总数均分 |
@@ -337,166 +408,102 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 九、改动守则
 
-0. starter 钩子运行时可能持有 WindowManagerGlobalLock；不得同步发广播或调用可能拿 AMS 锁的服务。副作用统一经 StarterSideEffects 投递，新增同步调用必须在 KDoc 说明锁安全依据，构建前由 scripts/check-starter-safety.sh 检查（Gradle 编译前置条件，CI 同时执行脚本回归与单测）。
-
-
-1. 结论要能指到一行日志或一段字节码，反编译优先于猜测（`dexsql` 查 services.jar / oplus-services.jar / SystemUI.apk）
+0. starter 钩子运行时可能持有 WindowManagerGlobalLock；不得同步发广播或调用可能拿 AMS 锁的服务。副作用统一经 StarterSideEffects 投递，新增同步调用必须在 KDoc 说明锁安全依据，构建前由 `scripts/check-starter-safety.sh` 检查（Gradle 编译前置条件，CI 同时执行脚本回归与单测）。
+1. 结论要能指到一行日志或一段字节码，反编译优先于猜测（`dexsql` 查 services.jar / oplus-services.jar / SystemUI.apk；侧边栏 APK 用 build-tools 的 `dexdump -d`）
 2. 重启前先把话说完：改了什么、装的哪个包、sha256、验证什么、看哪几条日志；命令用 `setsid` 脱离进程组
 3. 能只重启一个进程就不重启设备
 4. 注释与提交信息第三人称陈述，只写做什么、为什么、约束是什么
 5. 不在手机上跑 Gradle；不跨进程用静态字段通信；不按固定次数 `postDelayed` 撞系统数据
 6. 面板分组标题不能按文本或先后改名（标题行文案由 viewType 布局决定，两段都显示「工具 / Tools」，且随系统语言变化）：注入器按对象身份登记标题角色（`FavoriteGroupInjector.titleRole`），`title_bind` 钩子在 `onBindViewHolder` 返回后按角色改写可见标题，文案随语言取「收藏/最近」或「Favorites/Recent」；不能读 `UserPanelView.getRecentData()`（占位内容）
-9. 扇形目录不得在刷新路径上加载全部应用图标；新增补位来源或排序时，只能在「挑选条目」一步做，图标仍按条目缓存
-7. 不在 SystemUI 侧改写通知点击入口（回调不稳定，命中失败会丢弃原始事件）
-8. 工程纪律：构建输出落 `out/`、临时文件落 `tmp/`、`release.keystore` 必须保留、交付前 `tar -czf` 打包放存储根目录
+7. 不在 SystemUI 侧改写通知点击入口（回调不稳定，命中失败会丢弃原始事件）；通知相关改动只在 `NotifBundleHook.rewriteBundle` 写参数
+8. 扇形目录不得在刷新路径上加载全部应用图标；新增补位来源或排序时，只能在「挑选条目」一步做，图标仍按条目缓存
+9. 侧边栏 / 桌面的混淆名每个版本都可能变：按签名、字符串或调用关系找（DexKit 或签名匹配），不按单字母名写死；新版本先对照 `docs/sidebar-dex-resolution.md` 逐项核对
+10. `decision/` 包保持纯 Kotlin、无 android.* 依赖，判定改动必须带单测（`LaunchDeciderTest`）
+11. 版本号：每次代码更新 versionCode +1，构建前 versionName 末位 +1（见第六节）
+12. 工程纪律：构建输出落 `out/`、临时文件落 `tmp/`、`release.keystore` 必须保留、交付前 `tar -czf` 打包放存储根目录
 
 ## 十、当前状态
 
-2026-11-08 22:06 安装 1.4.8（2026110851，sha256 `86c49cf145d74b522799de80aae7ae2456bf8c51682a8158aa8c4f004e4c6007`，覆盖 1.4.7 `e06501ef…4eb7`）并经 restart-gate 重启 system_server。重启后 adb 断开，未读日志、未验证；待验证：4 个进程 `MODULE_CONFIG_READY`，改「更多」颜色后下次呼出即变色，开关中央预览后立即预取。按用户要求推送 main 并发布 GitHub Release v1.4.8（说明覆盖 1.3.10 以来改动）。注意：GitHub 上 v1.4.6 只有标签、没有 Release（第十节此前记为已发布，实际 Release 列表只有 v1.3.6 / v1.3.7 / v1.3.10）。
-
-2026-11-08 构建 1.4.8（2026110851），`out/FlymeFreeform-v1.4.8.apk`，sha256 `86c49cf145d74b522799de80aae7ae2456bf8c51682a8158aa8c4f004e4c6007`，release.keystore 签名，v1/v2/v3 与 zipalign 校验通过。在 1.4.7 基础上加入「更多」颜色改后立即生效（2026110850）与本轮两处修复（2026110851）。未安装、未提交、未发布；设备仍为 1.4.7。装机须重启 system_server。
-
-源码 versionCode 2026110851：复查后修两处。① 取色器选中全透明黑色（0x00000000）时，因与「跟随系统」的 0 相同，会被悄悄存成跟随系统；新增 `ModulePreferences.customRadialMoreColor`（透明度抬到 0x33 以上，结果永不为 0），取色器「确定」与对话框预览改用它，`coerceRadialMoreColor` 对非 0 值复用它；补单测 `pickedTransparentBlackStaysCustom`。② 删去已无调用的 `FrameworkConnectionRepository.setRadialMultiArcEnabled` / `setRadialArcCount`（圆弧条数统一走 `setRadialArcs`）。两处都只在模块 App 进程。编译、单测通过，未构建。装机须知不变：相对设备上的 1.4.7（2026110849），2026110850 改了 system_server 内的扇形绘制（协调器传入「更多」颜色），装下一包仍须重启 system_server。
-
-
-源码 versionCode 2026110850：用户反馈 1.4.7 把「更多」按钮改成白色后不立即生效。原因（读代码确认）：扇形按 `catalog.settings.radialMoreColor` 绘制，目录快照只在 `AppCatalogSnapshot.matches()` 不匹配时才重新加载，而 `matches()` 不含新加的颜色，要等前台切换等其他原因重载目录才变色。改为协调器在呼出时用最新设置 `lastSettings.radialMoreColor` 传给 `CornerRadialOverlayView.begin(moreColor)`，与中央预览各项同法；`matches()` 补上 `radialCenterPreview`、`radialCenterSizeDp`，开关或调整中央预览后立即重新加载并预取。编译、单测、lintVitalRelease 通过，未构建。1.4.7 的 GitHub Release 尚未发布。
-
-
-2026-11-08 构建 1.4.7（2026110849），`out/FlymeFreeform-v1.4.7.apk`，sha256 `e06501ef387fe95d04d8e43d2850ea1e6e74afa6b9b7448b4103ed7f29854eb7`。在 1.4.6 基础上加入「更多」按钮颜色与设置页整理。未安装、未提交、未发布。装机须重启 system_server（颜色绘制与中央预览在 system_server）。
-
-源码 versionCode 2026110849：设置页整理（用户要求）。新增 `SettingsGroup`（miuix `SmallTitle` + `Card`）。扇形设置分五组：呼出（触发位置、触发范围、保持挂起、横屏 / 游戏模式暂停）、扇形内容（扇形应用、补位来源、数量上限、扇形多圆弧）、外观与判定（图标形状、「更多」按钮颜色、命中范围）、中央预览（关闭时收起「显示应用名」「图标大小」）、「更多」面板（显示原有列表）。横屏 / 游戏模式按用户决定从小窗设置移回扇形设置。小窗设置：排除列表卡片置顶，下分「打开方式」（小窗跳转、解除限制、小窗数量）与「小窗操作」（小窗关闭、快速上滑）。扇形多圆弧由「开关 + 展开选条数」改为与触发位置相同的弹出列表 1–4 条，经 `setRadialArcs` 一次写入（1 条即关闭多圆弧并保留上次条数）；删去 `MultiArcPreference`、`ArcCountSelector` 及其四条字符串，摘要去掉「「更多」入口保留在默认圆弧」。横屏 / 游戏模式摘要按用户要求去掉「小窗功能不受影响」（README 同步）。设置的存储与功能不变。编译、单测、lintVitalRelease 通过，未构建。
-
-
-源码 versionCode 2026110848：新增「更多」按钮颜色（扇形设置，图标形状下方）。键 `radial_more_color`（ARGB Int），0 为跟随系统；自定义保留透明度但不低于 0x33（`coerceRadialMoreColor`）。扇形 `drawMoreItem` 自定义时底板取纯色，三点按 `MoreButtonColors.dotFor` 在 0xFF181818 / 0xFFE9E9E9 中取 WCAG 对比度更高者（半透明按叠在黑色上算），白底即黑点（用户要求）。设置页用 miuix `OverlayDialog` + `ColorPicker`，带按钮预览，可「跟随系统」或「确定」。经设置广播全量快照热生效。编译、单测 246 项（0 失败，3 跳过）、lintVitalRelease 通过，未构建。
-
-
-2026-11-08 构建 1.4.6（2026110847，sha256 `a78dda82c691df55237087765c62566c63cff734b72283cfb251ddd94d6ce517`），推送 main（`8ea53c4`）。按用户要求删除 GitHub Release v1.4.5 及其标签，发布 v1.4.6（说明覆盖 1.3.10 以来改动，并加入中央预览不再闪动）。1.4.6 尚未装机；设备仍为 1.4.5。
-
-
-源码 versionCode 2026110847：中央预览高清图全部缓存。用户确认取舍：内存随扇形条目数（默认尺寸每张约 0.9 MB，18 项约 16 MB），换取不再先显示小图再换图。目录每次加载后 `prefetchPreviews` 在图标线程补画缺的那几项、裁掉不在扇形里的（记 `SYSTEM_PREVIEW_PREFETCH_<缺>_OF_<总>`），中央预览关闭时不预取也不保留；包变化只丢该包的图，不再整体清空。视图请求与预取共用 `PreviewIconSizing.renderSizeFor`，保证按宽度判定命中；视图去掉 4 张上限，呼出时请求全部条目（同步命中）。此前设备日志同一应用高清图重复绘制 8–10 次，全缓存后每项只画一次。
-
-
-源码 versionCode 2026110846：用户反馈中央预览图标闪一下、像变亮。设备日志：深色模式开启；`PREVIEW_ICON_SOURCE_*_AdaptiveIconDrawable_284x284_TO473_raw0`，即高清图直接绘制 AdaptiveIconDrawable，未走 ColorOS 原生塑形（扇形小图走），两张图亮度与占比不同；且每次呼出都清空预览，缓存命中也晚一帧才换图。改为：高清图与扇形同一条处理链（`shapedIcon` 新增按预览边长重建的参数，`IconShapes.apply` 参数同扇形，独立 renderer 实例供图标线程用），去掉读 APK 原始资源的回退；缓存命中时回调在主线程同步写入，首帧即用高清图。日志改为 `PREVIEW_ICON_SOURCE_<pkg>_<类>_<尺寸>_TO<px>_native<0|1>`。代价：主题只给低清位图的图标，清晰度回到系统水平。未构建。
-
-
-2026-11-08 发布 v1.4.5：`refactor/starter-hook` 按功能补提交 5 个后快进合入 main，再合并远端 `f98371b`（README 兼容系统改为 ColorOS 15），推送 ZaiLinn/FlymeFreeform main（`f6dfaca`）。Release v1.4.5 附 `FlymeFreeform-v1.4.5.apk`（sha256 `61288bd1…d014`），说明覆盖 1.3.10 以来的改动；1.4.0–1.4.4 未单独发布。用户已在设备上确认「更多」不再左移。
-
-
-2026-11-08 20:52 安装 1.4.5（2026110845，sha256 `61288bd1b65513b6d3465a3911b142e0289b9cfb099e29785d02fec34841d014`）并重启 system_server，随后强行停止模块 App。重启后 4 个进程均 `MODULE_CONFIG_READY`，starter 钩子、手势 coordinator、双击横条钩子已装；`STARTER_EFFECT_FAILED_query_warmup` 不再出现，无锁违规、探针不可用或手势许可失败。首次打开「更多」：`PANEL_INDEX_INSET laidOut=true` 紧接 `PANEL_INDEX_INSET_BEFORE_DRAW`，即内边距在首帧绘制前补上、该帧被取消（pre-draw 时已布局属正常）；是否仍左移待用户目测。X 小窗内换链接重开尚未测。
-
-
-源码 versionCode 2026110845：用户反馈 1.4.4 打开「更多」时图标仍左移。原因推断（adb 未连接，未看日志）：建卡片时列表还没挂上本面板 adapter，`recyclerView(exact = true)` 找不到目标；adapter 与列表首次布局同帧完成，逐帧摆索引条时才补内边距，已晚一帧。改为在卡片上挂 `OnPreDrawListener`，每帧绘制前查找，一旦找到列表就补内边距并取消该帧，记 `PANEL_INDEX_INSET_BEFORE_DRAW`；每次补内边距记 `PANEL_INDEX_INSET laidOut=<bool>`，设备上据此核对。关闭面板时移除监听。编译与单测通过，未构建。
-
-同一 versionCode 另修：1.4.4 日志在 system_server 启动早期出现一次 `STARTER_EFFECT_FAILED_query_warmup`（`IActivityManager.registerReceiverWithFeature` 空指针，AMS 尚未就绪），预热整体放弃；之后首次启动经过钩子时会重试，影响仅限开机最初几次启动。去掉 `install()` 里的预热，改由首次启动触发。
-
-
-2026-11-08 构建 1.4.4（versionCode 2026110844），`out/FlymeFreeform-v1.4.4.apk`，sha256 `fe3e0d8c8c4a40a934542d7272f535c2093709370aa960b9bcf650370bf00bf7`。在 1.4.3 基础上加入设置页合并与说明修正。未安装、未重启。装机须重启 system_server。
-
-源码 versionCode 2026110844：合并页里横屏 / 游戏模式的说明由「暂停模块增强」改为「暂停扇形呼出；小窗功能不受影响」，与 `ModuleEnvironmentState` 实际行为一致（只有排除列表同时影响小窗跳转）。README 设置说明改为两组，删去「生效范围」小节与 `docs/images/settings-scope.png` 引用，`settings-zoom.png` 待重截。编译、单测与 lintVitalRelease 通过。
-
-
-源码 versionCode 2026110843：合并入口与页面标题由「小窗交互与生效范围」精简为「小窗设置」，继续共用同一字符串资源，release Kotlin 编译通过。仅文案调整，排除列表位置与说明不变；未构建 APK、未安装、未重启、未推送。
-
-源码 versionCode 2026110842：基于当前目录最新代码，将「小窗交互」与「生效范围」合为「小窗交互与生效范围」。排除列表在合并页最上方；排除列表说明、空状态和「小窗跳转」摘要明确共用同一列表。原小窗设置与横屏 / 游戏模式暂停保留；首页只显示合并入口，旧生效范围导航状态兼容到合并页。release Kotlin 编译通过，单测 242 项、3 项跳过、0 失败；静态检查通过。保留本轮开始前已有的未提交启动链路与图标优化改动。仅编译与单测，不构建 APK、不安装、不重启、不推送。
-
-2026-11-08 构建 1.4.3（versionCode 2026110841），`out/FlymeFreeform-v1.4.3.apk`，sha256 `9e02bf894bc392db8188bf759e8c2ead8e90d8715b3cb37eedadd88589997b14`。包含 refactor/starter-hook 分支全部改动及本轮复核修复，未安装、未重启。装机须重启 system_server。
-
-源码 versionCode 2026110841：复核审计修复后的五处问题。
-1. 延迟重开写入小窗参数时带原调用方 pid/uid（`setActivityOptions(Bundle,int,int)`，缺失时用 `SafeActivityOptions.fromBundle(Bundle,int,int)`），不再用单参数版本在主线程以 SYSTEM_UID 包装调用方 options；回退原参数启动时沿用复制来的 SafeActivityOptions。两种写法都不可用时不关窗、不接管。
-2. 手势许可广播按值去重，客户端请求、用户切换、启动时强制发送。
-3. `UserManager.isUserVisible` 反射失败时退回「是否当前前台用户」并记一次 `ZOOM_REOPEN_USER_VISIBILITY_FALLBACK`；重开校验不通过记 `ZOOM_REOPEN_INVALID_<pkg>`。
-4. 锁探针增加 mSupervisor / mController 路径和按类型查找；探针不可用时控制中心查询仅在 execute 阶段放行，不再整体失效。
-5. starter PM 缓存在用户解锁 / 切换时只增量补充，不清空；查询带 MATCH_UNINSTALLED_PACKAGES。
-仅编译与单测（242 项，0 失败，3 跳过）。
-
-**装机须知**：手势许可由 system_server 发布，只重启 SystemUI 或桌面而不重启 system_server 时，新 SystemUI 收不到许可，角落手势不可用。装这一批必须重启 system_server。
-
-
-源码 versionCode 2026110840：中央预览绘制倍数由 2× 降为 1.5×（`PreviewIconSizing`），默认 96 dp、约 3.5 倍密度下单张由约 2.8 MB 降到约 1.6 MB，4 张缓存常驻 system_server 由约 11 MB 降到约 6 MB；最大尺寸仍触及 1024 px 上限（4 MiB）。仅编译与单测。
-
-
-第五组源码 versionCode 2026110839：starter 静态扫描遇到缺目录、空目录或读取错误均失败，并检查跨行调用与尾随 lambda；Gradle 编译 / check、CI 和本地发布接入。取消任务与队列拒绝均统一执行完成通知，回归验证准备状态释放。最终复核增加用户隔离记忆、重开票据身份、当前 Request 目标解析和 PM 缓存写回代数，队列拒绝后允许重试；关闭前核对任务用户及用户可见性。扫描器是源码模式检查，不替代锁序审查或运行时探针。
-
-
-第四组源码 versionCode 2026110838：面板异步写回绑定当前会话并复核搜索和原生列表开关；图标失效与缓存写回按同一代数原子校验。中央预览按屏幕尺寸 2× 重绘（最长 1024 px、缓存 4 张），低清主题位图尝试 APK 自适应/矢量源（用户已授权优先清晰度），最终统一按设置的圆形 / 圆角方形塑形；新增 PREVIEW_ICON_SOURCE 日志用于确认来源。位图保留原 alpha，不再强制圆形裁切；侧边栏工具仍受原始位图分辨率限制。
-
-
-第三组源码 versionCode 2026110837：手势入口收到 system_server 经 UID 校验的许可后才接管；许可在前台、设置、环境和用户切换时更新，触摸路径只读缓存。广播有调度延迟，前台切换边界仍须设备验证。窗外关闭只接受从 DOWN 实际捕获的流。黑名单变更在串行写入队列按包合并，选择页即时反馈待确认状态。
-
-
-第二组源码 versionCode 2026110836：所有改写先核对排除和锁屏；用户来自 Request；当前启动控制中心来源仅在探针确认未持 WM 锁时读取，嵌套阶段共享本次观察；PM 查询移到专用工作线程。延迟重开复制 Request 身份与 grants，执行前复核，失败回退原参数启动；反射预检失败则不关窗、不接管。
-
-审计修复五组已完成，源码 versionCode 2026110839。方案见 `docs/plan-audit-fixes.md`，逐项结果见 `docs/audit-fixes-2026-11-08.md`。第一组修复连接死亡、身份校验、准备任务取消释放、绑定上下文和用户切换；最终复核统一了三个接收端的异常处理。仅编译与单测，不操作设备。
-
-更新时间：2026-11-08（本地重构；未查询或操作设备）
+更新时间：2026-11-09（只改源码；未查询或操作设备）
 
 | 项 | 值 |
 |---|---|
-| 版本 | 工作副本 1.4.7 / 2026110850（1.4.7 包为 2026110849，`out/FlymeFreeform-v1.4.7.apk`，sha256 `e06501ef…4eb7`，未装机、未发布；GitHub 最新 Release 为 v1.4.6）；设备为 1.4.5 / 2026110845（`out/FlymeFreeform-v1.4.5.apk`，sha256 `61288bd1…d014`，2026-11-08 20:52 装并重启 system_server，之后强行停止模块 App）。v1.3.10 曾按用户要求覆盖重发（破例未加 versionName），重发资产为 2026110821 |
-| 本地构建 | `out/FlymeFreeform-v1.4.1.apk`，sha256 `04d7b8e7662f83d8542a036cef3d3c73689fd85596cfe51caa62d554c63cccbf`，用户密钥签名，已装设备、未发布。1.4.0 `1e847fe3…f358` 有死锁勿用；1.3.12 `2ce93a54…6cfd`；1.3.11 `b56e0400…42bd`；`out/FlymeFreeform-v1.3.10.apk` 为重发的 Release 资产 `afc03c6b…65f0`，首发包 `83d94a5e…2bf3` 备份在 `tmp/FlymeFreeform-v1.3.10-83d94a5e.apk` |
-| 工作副本 | `~/Documents/Code/FlymeFreeform`，本轮分支 `refactor/starter-hook`，基线 `c7f8c21`；A=`55b6510`，B=`813837b`，框架服务=`4825e37`；审计第一至四组=`763f57e` / `725dfcd` / `576e8f3` / `6604b29`，第五组包括最终复核与构建闸门，均未推送。原 main = `origin/main`。v1.3.7（`5ce7888`）之后：用户网页提交 `bdb6a30`（README 致谢精简），`a454470` 新设置项、`5a89d85` 「更多」原有列表 + 字母索引 + 回桌面收起、`9d1c35d` 扇形外大内小 + 屏幕中央所选应用 + 内置面板回桌面收起、`c1d0893` 添加应用快速点击闪动，之后是 1.3.10 版本号与文档、用户网页提交 `e3681e4`（README 去上游链接）、方形「更多」修复、README 换 png 截图，重发 1.3.10 的版本号与文档（v1.3.10 tag 所指，`b3562e0`）。之后 2026-11-08 按功能分组提交 1.3.11–1.4.3 的改动：`8d015c7` 侧边栏目录缓存与悬空绑定、`530fd2b` 设置广播共享身份与完整快照、`bd5f490` 「最近」排除扇形固定项、`1dd1297` 「更多」打开时图标左移、`bdc667b` 双击横条关闭、`aef03c5` 应用互跳小窗与死锁修复（含关窗重开）、`ac8cb85` 文档与版本号；中间提交未单独编译，HEAD 编译与单测通过；均未推送。前三个功能提交均在临时 worktree 单独编译通过；`upstream` = Hoerire |
-| 已发布 | Release [v1.3.10](https://github.com/ZaiLinn/FlymeFreeform/releases/tag/v1.3.10)，资产 `FlymeFreeform-v1.3.10.apk`（sha256 见「本地构建」）；上一版 v1.3.7 资产 `a8344244…61d3` |
-| 设备已装 | `04d7b8e7`（1.4.1 / 2026110827），17:54 装后经 restart-gate 重启 system_server。此前 1.4.0 在 17:20:50 死锁、17:23 看门狗软重启 |
-| 设备另有 | 旧包 `io.github.hoerire.flymefreeform` 仍在，应在 LSPosed 停用并卸载 |
-| 设备反馈 | 1.3.8：中央卡片有黑底板、图标发糊、字母索引条不出现，1.3.9 已改；1.3.9：添加应用快速点击闪动，1.3.10 已改。第 2 圈「其余变灰」核实为该圈已存满 5 项（两个工具 + DeepSeek、Duolingo、Firefox），按设计 |
-| 未打包改动 | 框架服务恢复：按底层 Binder 去重，清理死亡服务并重新选主；监听 Binder 死亡且写入前复核，失效旧对象不再导致 MultipleServices 锁住设置页。 B：纯 Kotlin 判定与启动记忆已迁出，injector 为 342 行，日志码及条件顺序保留。 A 锁安全重构：统一副作用出口、WM 锁检测、静态检查、异步 PM 缓存；未构建 APK。 相对设备上的 1.4.2：① X 已在小窗时再点链接，1.4.2 放行普通启动后 X 以 CLEAR_TASK 重启自身、系统不认小窗参数而退成全屏（日志 `setScenario --> 0`、无 `collectFlexibleTaskInfo`）；改为吞掉本次启动，主线程先经 `ZoomTaskCloser`（OutsideTapCloseHookInstaller 在 `addFlexibleTask` 时记下 FlexibleTaskController）对该包最上层普通小窗 `exitFlexibleTask`，400 ms 后复制原 Request 并以 zoom options 重开，保留调用者 / 用户 / grants，失败尝试原参数启动，走首次打开的路径（日志 `ZOOM_REOPEN_SCHEDULED_` / `ZOOM_REOPENED_closed…_started…`）；Telegram 重发的同一链接按 linkKey 吞掉。② 「更多」原有列表模式打开时图标往左挪：字母索引条在拼音算完、列表已布局后才给列表加右内边距，网格列宽重算；改为建卡片、绑定 adapter、逐帧找列表时就先预留（只认绑定了本面板 adapter 的列表），索引条不显示也不撤。本机编译与 183 项单测通过，未构建。
-| 未在设备验证 | 框架服务：后续用户授权重启 system_server 后直接打开设置页应自动恢复连接和写入，不需要强停；重复包装同一 Binder 不报多服务，不同有效服务仍保持隔离。 B 完整回归：① Telegram→Chrome 小窗；② Telegram→X 直达帖子；③ X 小窗中再点链接，关旧窗重开并送达新帖子；④ 连点十次以上不死锁、无 STARTER_LOCK_VIOLATION_；⑤ 登录/授权回传；⑥ 页内跳转；⑦ 通知、磁贴长按、桌面卡片/快捷项/设置；⑧ 桌面全局搜索仍全屏。 A：通知面板收起改为队首投递后小窗是否被遮挡；启动早期冷缓存、安装/卸载后目录缓存恢复；锁屏/解锁切换；Telegram 连点 X/Chrome 不死锁且无 STARTER_LOCK_VIOLATION_。 下一包：Telegram 点 Chrome 链接小窗（`_link1` + `ZOOM_PREEMPTED_com.android.chrome`）、点 X 链接小窗且直达帖子（中转页重启是否接受注入，`ZOOM_INJECTED_self_relaunch`；若被 FlexibleTaskController 拒则全屏但链接仍在）、X 已在小窗时再点链接：旧小窗关闭后重开为小窗并显示新帖子（`ZOOM_REOPENED_closedtrue_startedtrue`），不再退成全屏；「更多」原有列表模式打开时图标不再左挪；装新包并重启一次后，再装新包不重启，改图标形状 / 圆弧数 / 角落开关 / 小窗关闭方式能否即时生效（详细日志 `SETTINGS_BROADCAST_APPLIED_FULL`）；「双击横条」关普通小窗（`CAPTION_DOUBLE_TAP_CLOSE`），迷你小窗双击仍为原生行为，该模式下点窗外不关、连点链接不再卡死 system_server；登录授权类 startActivityForResult 仍全屏且能回传；应用内翻页不被误接管；1.3.12：增删固定项不重启即生效；之后再装新包（不重启 system_server）增删固定项仍生效；搜索添加时连点应用，列表顶部不再弹出「正在读取侧边栏目录」、工具与快捷入口不变灰、不再出现「不可用」；方形模式下「更多」底板外形、大小是否与相邻应用图标一致（深浅色各看一次）；1.3.10 相对 1.3.9 的添加应用闪动修正与三处占用优化；屏幕中央所选应用卡片（无底板、高清图标、应用名省略、横屏位置、换项弹动）；扇形图标外大内小（方形模式圆角是否被裁、选中放大是否越出屏幕）；字母索引条（日志 `PANEL_ALPHABET_SHOWN` / `PANEL_ALPHABET_NO_LIST`；右列图标能否点、跳转、震动、深色文字颜色）；回桌面收起「更多」（`ALL_APPS_CLOSE_SYSTEM_DIALOGS_<reason>` / `SYSTEM_MORE_PANEL_CLOSE_<reason>`）；跟随系统时 LuckyTool 上限生效 |
-| 待办计划 | 全量审计修复见 `docs/audit-fixes-2026-11-08.md`，五组完成，本轮 240 项测试 / 3 跳过、静态回归 9 项通过，仅待获准设备验收。前轮 `docs/plan-starter-hook-refactor.md`：starter 钩子锁安全（统一副作用出口、运行时锁检测、构建前静态检查）与启动判定纯函数化 + 真实日志回归测试，A、B 与框架服务自动清理均已完成；release Kotlin 编译通过，215 项测试中 212 项通过、3 项跳过。B 覆盖 17 类场景、时间窗边界、惰性查询与失败路径，服务候选清理新增 6 项测试。未构建 APK、未装机、未重启、未推送 |
-| 待查 | 装新包后增减应用扇形不更新：已定位为固定项广播未共享身份（`sentFromUid` 为 -1 被接收端丢弃），平时只靠 LSPosed 远程配置回调，而模块重装后 Hook 进程里该回调不再触发。1.3.12 已让广播共享身份；图标形状、圆弧数等其他设置原先只走远程配置，现已改为全量广播（待设备验证）；1.4.0 重启后侧边栏目录不可用：推断为上游已修的悬空绑定（system_server 起来后侧边栏进程晚到，连接回调晚于超时即放弃建链且不再重绑），现有版本无日志可证，移植后看 `SIDEBAR_ENTRY_TIMEOUT_LIST` 与是否恢复 |
-| 单元测试 | 240 项：237 项通过、3 项跳过，release Kotlin 编译通过；静态脚本 9 项回归通过，Gradle 编译前拒绝违规调用的集成验证通过；injector 398 行；未构建 APK |
-| 工具 | `local-release.sh`、`restart-gate.sh`（均列入 `.gitignore`，不随仓库分发） |
-| 关于页 | 只保留一个「项目地址」→ `ZaiLinn/FlymeFreeform`；上游地址与致谢在 README |
-| 签名 | 用户密钥 `release.keystore`（`CN=ZaiLinn`）；口令从环境变量 / 钥匙串 / 交互读取 |
+| 源码 | 1.4.10 / versionCode 2026110915；`main` = `origin/main`，代码 `f7e62d8`、版本 `624f590`（标签 v1.4.10），之后只有文档提交；无未提交代码 |
+| 本版内容 | 2026110902–0915 合入 `f7e62d8`（通知前台全屏、启动原参数、starter 冷窗口、侧边栏与扇形本地副本、分身识别、多用户、减少重复工作与占用、设置页按需加载与拼音搜索、1.4.9 闪退修复）。逐条详情见 `docs/dev-history.md` |
+| 测试 | 2026110914：debug 编译与单测通过，272 项（269 通过、0 失败、3 跳过）；starter 静态检查、git diff --check 通过。新增 21 项验证状态与时序；Compose 实际渲染、Bitmap/GPU 占用及厂商服务仍待真机。1.4.9 构建（`local-release.sh`：starter 静态检查、单测 272 项 0 失败 3 跳过、assembleRelease、zipalign、v1/v2/v3 签名与校验）通过。范围见 `docs/regression-2026-11-09.md`。2026110915：单测 272 项 0 失败 3 跳过、`minifyReleaseWithR8`、lintVitalRelease 通过，R8 产物 dex 里 19 处 `$stable` 读取字段齐全、无读不存在静态字段 |
+| 构建 | 1.4.10 / 2026110915，`out/FlymeFreeform-v1.4.10.apk`（2228527 字节），sha256 `11f868b34607c029f17bb64894820a99fb3d95532d8028f3b439708a849c9098`，release.keystore 签名；`local-release.sh` 通过（单测 272 项 0 失败 3 跳过），dex 里 19 处 `$stable` 读取字段齐全；2026-11-09 22:53 `adb install -r` 装机 |
+| 上一包 | 1.4.9 / 2026110914，`out/FlymeFreeform-v1.4.9.apk`（2228527 字节），sha256 `21f38bc48df2ccec2715ec0559fbecd78772f63fabe8945736102f99140ad8f3`，release.keystore 签名；用户已自行装机，设置页打开即闪退（`NoSuchFieldError` `$stable`，见 2026110915），模块功能正常 |
+| 设备 | 1.4.10 / 2026110915（22:53 覆盖安装；冷启动设置页 377 ms，进程存活、crash 缓冲区无本包记录，进入「小窗设置」正常；其余页面未逐一点开）。未重启 system_server / 侧边栏：1.4.9 → 1.4.10 只改设置页，钩子仍是用户自行安装 1.4.9 后加载的那份；1.4.9 是否已重启生效未确认 |
+| 设备另有 | 旧包 `io.github.hoerire.flymefreeform`（2026-11-08 记录仍在，未确认是否已卸载） |
+| GitHub | `ZaiLinn/FlymeFreeform` main 已推送；Release / 标签 v1.3.6、v1.3.7、v1.3.10、v1.4.8、v1.4.10（2026-11-09 发布，资产 `FlymeFreeform-v1.4.10.apk`，GitHub 记录的 sha256 与本地一致）；LSPosed 模块仓库未建 |
+| 侧边栏样本 | 本地有 16.11.3、17.11.2 两个 APK（项目根目录，未入库）；`docs/sidebar-dex-resolution.md` 的回归样本为 16.14.0、16.14.6、17.9.2、17.9.8，尚未加入这两个 |
 
-### 实测（`dc0bcfef` 版，即目录两步发布首版，重启后）
+**待验证**（1.4.10 装机后；先确认设置页能打开、各页不闪退，按进程；2026110914 新增回归与真机边界见 `docs/regression-2026-11-09.md`）
 
-- system_server 重启后约 46 秒扇形就绪：`SYSTEM_CATALOG_RADIAL_552MS_6`；第一次呼出 `APPS_6`
-- 之后每次刷新扇形 2–98 ms；首次补齐面板 530 个图标 14.4 秒（期间「更多」为空），之后 11–50 ms
+- system_server（必须重启 system_server，会连带 SystemUI）：
+  - 通知：前台全屏应用点自己的通知 → 全屏打开，转场与横幅收起与原生一致；桌面或其他应用在前台、或该应用正在小窗时仍小窗；
+    `NOTIF_FOREGROUND` 的前台包正确（为 null 或总是桌面说明 SystemUI 取不到任务列表）；设置类通知全屏；
+    `ZOOM_SKIP_SYSTEMUI_FULLSCREEN_` 不应出现在非前台场景（出现说明 ColorOS 自己写了 windowingMode=1）
+  - 启动：`ZOOM_NATIVE_CHANNEL_` 是否出现；通知、桌面卡片、快捷项、链接小窗与之前一致
+  - 缓存：`STARTER_QUERY_WARMUP_READY_` 三段耗时；开机后立即点链接 / 通知是否仍误判全屏
+  - 侧边栏目录：首次解锁取到目录后写出副本（`ls -l /data/system/flymefreeform`）；再重启后解锁前已有 `SIDEBAR_CATALOG_CACHE_READY_`，解锁后工具与分身立即可见；
+    副本显示期间点工具能否打开；两行耗时日志各段数值；SELinux 拒写时见 `SIDEBAR_CATALOG_CACHE_WRITE_FAILED`
+  - 2026110907：装 / 更新一个无关应用，扇形里固定的工具不消失；卸载应用后其分身条目消失；切换系统语言后扇形与「更多」名称、排序更新；
+    前台切换后 `SYSTEM_CATALOG_PANEL_ORDER_` 不再每次出现；中央预览同一项不重复绘制（`SYSTEM_PREVIEW_PREFETCH_` 计数），160 dp 时只预取前 8 项
+  - 2026110909–0910：中央预览开启、固定项填满时，每项高清图只画一次、反复呼出不重画；内置「更多」面板（侧边栏打不开时）图标随滚动出现；
+    `dumpsys meminfo system_server` 与改动前对比；固定项占满时切换前台不再出现 `SYSTEM_CATALOG_RADIAL_`；关闭模块后 `dumpsys activity services com.coloros.smartsidebar` 不再有本模块绑定；
+    小窗外点击关闭照常（新开小窗后区域就绪），功能关闭时新开小窗不再刷新触摸区域；系统分身用户下扇形列出该用户的应用并在该用户下打开
+  - 2026110911：首次装机解锁后约 10 s 出现 `radial_snapshot_u0.bin`；再重启 system_server，解锁前已有 `RADIAL_SNAPSHOT_READY_`，解锁后立即呼出扇形不为空，点固定项能打开；
+    侧边栏面板打不开时内置「更多」面板第一屏图标随面板出现即有（2026110912）；
+    2026110913：副本显示期间呼出、真实目录到达后（手指不松）中央预览变高清、点「更多」内置面板有列表；内置面板滚到底再回顶部，`dumpsys meminfo system_server` 不随应用数涨；
+    分身用户下补位用该用户的最近 / 常用，切换用户后扇形不出现旧用户的应用，新用户下桌面快捷项、通知仍进小窗；
+    改固定项后重启，副本不被采用（无 `SYSTEM_RADIAL_SNAPSHOT_ADOPTED_`）；删掉副本、解锁后立刻呼出，扇形在手指未松开时补上条目
+- 设置页（App 进程，覆盖安装即生效）：应用列表先出名称、图标随滚动出现；快速离开再进入「扇形应用」页不再出现 7 s 读取中；
+  搜索「weixin」「wx」「 微信 」都能找到微信；停留在列表页时更新一个可见的应用，图标换新；排除列表选择页滑动流畅；切换语言后名称更新
+- 侧边栏进程（`pkill -f com.coloros.smartsidebar`）：
+  - 17.11.2 上 `PANEL_TOOL_ZOOM_INSTALLED_n_4`、16.11.3 上 `_m_3`，付款码 / 扫一扫进小窗；排除列表内的应用记 `PANEL_TOOL_ZOOM_SKIPPED_EXCLUDED_`
+  - 分身固定项能列出并打开分身而不是本体；出问题的侧边栏版本上分身是否出现（根因未在真机确认）
+- 1.4.8 本身：4 个进程 `MODULE_CONFIG_READY`；改「更多」颜色后下次呼出即变色；开关中央预览后立即预取
+- 更早登记、未确认是否已验的回归清单见 `docs/audit-fixes-2026-11-08.md` 与 `docs/dev-history.md` 末尾旧状态表「未在设备验证」
 
-### 下一步（按序）
+**下一步**
 
-0. 当前授权仅源码修复、编译、单测与静态检查，已完成；未获新的装机授权前不构建 APK、不安装、不重启。下一轮设备验收按 `docs/audit-fixes-2026-11-08.md` 的清单执行。
-1. 卸载旧包 `io.github.hoerire.flymefreeform`
-2. 新包上逐项实测多圆弧、补位方式、跨圈移动、震动、预览、「更多」面板首开耗时（`SYSTEM_CATALOG_PANEL_ORDER`；图标形状让面板图标多一步处理）
-3. 待评估：滑选时显示应用名
+1. 确认 1.4.9/1.4.10 的钩子已生效（`MODULE_CONFIG_READY` 里的版本）；未生效时经用户同意后经 restart-gate 重启 system_server，再 `pkill -f com.coloros.smartsidebar`，按上面清单验收
+2. 把 16.11.3、17.11.2 加进 `docs/sidebar-dex-resolution.md` 回归样本
+3. 卸载旧包 `io.github.hoerire.flymefreeform`
+4. 待评估：滑选时显示应用名
 
-### 本轮的坑
+## 十一、经验与坑
 
-- 扇形视图里只跟显示有关的新设置（如「更多」按钮颜色）不能读 `catalog.settings`：目录快照只在 `AppCatalogSnapshot.matches()` 列出的字段变化时重载。新增显示类设置应由协调器在 `begin()` 时从 `lastSettings` 传入；影响目录挑选或预取的设置要加进 `matches()`。
+长期有效的结论，原始记录与证据路径见 `docs/dev-history.md`「坑（原文）」。
 
-- **重启后设置页报「检测到多个框架服务」**：1.4.2 重启 system_server 后马上打开设置页出现，强停应用再开即恢复「已连接」。
-  推断 lspd（未随 system_server 重启）在模块应用启动时把服务递了两次，`liveServices` 里有两个对象，于是禁用写入防配置分叉；未取到绑定日志（应用日志超配额被丢）。现已增加底层 Binder 去重与死亡清理，待用户授权设备验证。
-- **1.4.0 致 system_server 死锁（看门狗重启）**：`tmp/traces_SystemServer_WDT_1.4.0_deadlock.txt`（设备 `/data/anr/traces_SystemServer_WDT08_11_17_22_27.465_pid22251`）。
-  binder 线程 tid=336 在 `ActivityStarter.execute` 内持有 `WindowManagerGlobalLock`，经我们的 executeRequest 钩子
-  （`x1` = `ActivityStarterZoomInjector`，R8 map id `f287fa6a…` 与 1.4.0 构建一致）进入 `requestBannerCollapse` 的 `ContextImpl.sendBroadcast`，
-  等 AMS 锁；tid=83 在 `attachApplication` 里持 AMS 锁、等 WM 全局锁（被跳转的应用正在起进程）——AB-BA 死锁。
-  抢占路径里的任何 sendBroadcast / 拿 AMS 锁的调用都不能在 starter 钩子里同步执行（已改：`requestBannerCollapse` 投递到主线程）；1.4.0 让每次链接都走抢占，把原本罕见的时序变成必现。
-  同批次还见到：X 中转页以 MAIN 重启自身时改走 `startZoomWindow` 会丢掉链接、只停在首页；X 已在小窗时再点链接，`startZoomWindow` 只把已有任务提到前台，链接不送达
+**system_server 与 starter**
+- 1.4.0 死锁（看门狗重启）：starter 钩子在持 `WindowManagerGlobalLock` 时同步 `sendBroadcast` 等 AMS 锁，另一线程 `attachApplication` 持 AMS 锁等 WM 锁，AB-BA。starter 钩子里任何广播 / 拿 AMS 锁的调用都不能同步执行（第九节第 0 条）。traces 在 `tmp/traces_SystemServer_WDT_1.4.0_deadlock.txt`
+- 应用间跳转：从 Activity 调 `startActivity` 也带 `resultTo`（requestCode -1），只有 requestCode >= 0 才算等结果；往后台发起的启动注入小窗参数会被 `adjustOptionsForFlexibleTask` 以 reason 8/9 拒绝，只能改走 zoom 入口抢占
+- X 一类以 NEW_TASK|CLEAR_TASK 重启自身的应用：已在小窗时再点链接，`startZoomWindow` 只把旧任务提到前台、链接不送达；做法是关旧小窗后复制 Request 重开
+- `killall system_server` 不会新开 `modules_*.log`，重启后的记录追加在原文件；等待就绪按时间过滤，不能按「最新文件里有 COORDINATOR_READY」判断
+- 装了 LuckyTool 时多浮窗上限以 LuckyTool 为准，本模块的「小窗数量」压不住它
 
-- 应用间跳转（Telegram 点 X / Chrome 链接）实测全屏：从 Activity 调 `startActivity` 也带 `resultTo`（`rt=1`，requestCode -1），
-  抢占路径见 resultTo 一律放行，只剩往 options 注入小窗参数，被柔性任务控制器拒绝（`adjustOptionsForFlexibleTask reason:8/9`），
-  task `mode=fullscreen`；且 X（`MainActivity` 以 NEW_TASK|CLEAR_TASK 重启自身）、Chrome（`IntentDispatcher` → `CustomTabActivity` 新任务）都有中转页。
-  1.4.0 改为：只有 requestCode >= 0 才算等结果；不等结果的第三方 `ACTION_VIEW` 跨包链接改走 `startZoomWindow`（`isPlainInterAppLink`），
-  1.5 s 内发起方重发同一链接直接吞掉（Telegram 会用不同 flags 连发两次）；刚经 zoom 入口打开的应用 3 s 内以 NEW_TASK 重启自身也走 zoom 入口，最多 2 次（`isSelfRelaunch`）
+**设置与广播**
+- 广播接收端核对 `sentFromUid`，发送端不共享身份时它是 INVALID_UID，推送被丢弃而 `dumpsys` 仍显示 DELIVERED；必须 `BroadcastOptions.setShareIdentityEnabled(true)`
+- 模块重装后 Hook 进程里的远程配置回调不再触发，设置只能靠全量广播热生效；覆盖安装后按改动最大的进程重启
+- 重启后设置页报「检测到多个框架服务」：lspd 可能把同一服务递两次，现按底层 Binder 去重并清理死亡服务
 
-- 固定项广播 `ACTION_PINNED_TARGETS_CHANGED` 原先用普通 `sendBroadcast` 发送，接收端（system_server、侧边栏）核对 `sentFromUid`，
-  未共享身份时它是 INVALID_UID，推送一律被丢弃，`dumpsys activity broadcasts` 里却显示 DELIVERED。改为 `BroadcastOptions.setShareIdentityEnabled(true)`（1.3.12）。
-  装新包只强停模块应用而不重启 system_server 时，远程配置回调失效、广播又被丢，增删应用不生效
-- `killall system_server` 不会新开 `modules_*.log`（日志按 LSPosed 守护进程启动分文件），重启后的记录追加在原文件里；等待就绪时按时间过滤，不能按「最新文件里有 COORDINATOR_READY」判断
-
-- 添加应用页的侧边栏目录读取以 `canChangeSettings` 为键：每次增删置起 isUpdating 就取消并重发请求，顶部反复弹出「正在读取侧边栏目录」、工具与快捷入口变灰；
-  system_server 端 `ColorOsEntryCatalogBroker` 对 500 ms 内的重复请求、满队列（4）的请求都直接丢弃且不回复，客户端等满 7 s 超时即判「不可用」。
-  改为以 `settingsEditable` 为键，并让目录读到一次后常驻（静默刷新、失败保留缓存）
-
-- 添加应用页的本地顺序 `localOrders` 曾随 `canChangeSettings`（含 isUpdating）清空：每次写入时勾选先跳回旧配置再恢复（图标文字闪动），快速连点时后一次基于旧列表提交、冲掉前一次。改为只随 `settingsEditable` / `issue` 清空（已发布于 1.3.10）
-- 占用检查后的三处优化（已发布于 1.3.10）：中央卡片高清图标的留白比例改在图标线程算（原在 system_server 主线程逐像素扫，滑选时可能掉帧）；中央卡片应用名的截断与测量按「选中项 + 大小 + 画布宽 + 字体缩放」缓存，不再每帧重算；字母索引的拼音首字母在 `PanelPinyin.executor` 后台算，全部命中缓存时才在主线程直接取，结果按 `alphabetGeneration` 只采用最新一次。高清图标缓存 6 → 4 个
-
-- 扇形目录曾在每次刷新时把全部应用（本机 537 个）图标画成位图：增减固定项要等数秒、开机后首次呼出空扇形
-- 角落空白区若以「最内一圈图标内沿」为界，两圈时第二圈只剩约 50 基准 dp 宽
-- `ConcurrentHashMap` 上用 Kotlin `in` 会调用 `contains` = `containsValue`，必须写 `containsKey`
-- 一次打包混入多个改动（首个 release 包含多圆弧、面板标题、搜索返回三项），出问题无法定位；之后一包一改
-- 只要覆盖安装了模块包，就按改动最大的进程重启；装包后不重启 system_server 时，曾出现增减应用扇形不更新（原因未定）
+**扇形与目录**
+- 扇形视图里只跟显示有关的设置（如「更多」颜色）不能读 `catalog.settings`：目录快照只在 `AppCatalogSnapshot.matches()` 列出的字段变化时重载。显示类设置由协调器在 `begin()` 时从 `lastSettings` 传入；影响挑选或预取的设置加进 `matches()`
+- 角落空白区不能以「最内一圈图标内沿」为界，两圈时第二圈只剩约 50 基准 dp 宽
 - ColorOS 的 `buildAdaptiveIconDrawable` 不理会外形路径，应用图标形状只能在模块里自己裁；系统图标带透明留白，裁切前先裁到本体
-- Compose 里「换位后先回到旧位置再动画」的补偿必须同帧生效（`SideEffect` 写状态、绘制阶段读），放进 `LaunchedEffect` 会闪一帧
-- 装了 LuckyTool 时多浮窗上限以 LuckyTool 为准，本模块的「小窗数量」实测压不住它
 - 侧边栏工具的图标资源可能不属于侧边栏自身；目录读取里任何单项失败都必须就地兜底，不能让整个目录作废
+- 添加应用页的目录读取与本地顺序只能随 `settingsEditable` / `issue` 变化，随含 isUpdating 的 `canChangeSettings` 变化会反复重发请求、勾选闪动、连点互相覆盖；broker 原先对 500 ms 内的重复请求不回复，客户端白等 7 s 超时，现回 `BUSY` 让客户端重发，且页面暂停不取消请求。满队列（回调已有 2 个）仍立即回失败
+
+**代码与流程**
+- R8 会删掉 Compose 的 `$stable` 字段而留下调用处的运行时读取（1.4.9：`inner class AppIconLoader` 推断不出稳定性，设置页打开即 `NoSuchFieldError`；debug 不混淆，测试与编译都发现不了）。给 Composable 传的类型推断不出稳定性时标 `@Stable` / `@Immutable`；keep 规则已保留本模块的 `$stable`。改 Compose 参数类型后，查 R8 产物 dex：`dexdump -d` 里每个 `sget …$stable` 的字段都要存在
+- `ConcurrentHashMap` 上用 Kotlin `in` 调的是 `contains` = `containsValue`，必须写 `containsKey`
+- Compose 里「换位后先回到旧位置再动画」的补偿必须同帧生效（`SideEffect` 写状态、绘制阶段读），放进 `LaunchedEffect` 会闪一帧
+- 一次打包混入多个改动出问题无法定位，一包一改
+- 直接跑 Gradle 要 `ANDROID_HOME=$HOME/Library/Android/sdk sh ./gradlew …`：仓库没有 `local.properties`，`gradlew` 没有执行位；输出再经 grep 过滤时失败会被吞掉，看退出码
+- system_server 里 `Process.myUserHandle()` / `UserHandle.myUserId()` 永远是 0 号用户；涉及前台用户的目录、启动、组件校验都要取 `CurrentUser`
+- 缓存上限要同时管住持有者：只把缓存换成 LRU，若面板条目、快照、浮层仍引用位图，内存照样不释放，被淘汰的还会被重画
+- 目录类缓存清空后再重读，读取失败时界面会一直缺项：失效时保留旧内容、只删确定失效的条目，读到新结果再整体替换
+- 写在没安装的钩子里的逻辑不会生效（2026110901 的前台判定写进了从未安装的 `NotificationZoomSourceHook`）：改之前先确认入口真的装上、真的在跑
+- 结论前先核字节码：2026110906 曾以为侧边栏按 `isCloned` 选启动用户并加了覆盖钩子，复审 `startNormalApp` 发现按 `getMutiUserId` 启动，钩子已删
