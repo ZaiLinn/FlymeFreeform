@@ -49,6 +49,14 @@ internal object LaunchRules {
         "android.intent.action.PICK",
         )
 
+    /** 拍照、录像：取景界面在小窗里不可用，且调用方在等结果，始终全屏。 */
+    val CAPTURE_ACTIONS =
+        setOf(
+        "android.media.action.IMAGE_CAPTURE",
+        "android.media.action.IMAGE_CAPTURE_SECURE",
+        "android.media.action.VIDEO_CAPTURE",
+        )
+
     /**
      * 分享面板的组件：包名与类名片段。
      *

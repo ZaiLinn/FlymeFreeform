@@ -14,6 +14,7 @@ class LaunchDeciderTest {
     private class Environment : LaunchEnvironment {
         override var enabled = true
         override var zoomLaunch = true
+        override var zoomLaunchCard = true
         override val systemUiUid = 10010
         override val launcherUid = 10020
         var unlocked = true
@@ -58,7 +59,11 @@ class LaunchDeciderTest {
             else -> Unit
         }
     }
-    private fun logs(d: LaunchDecision) = d.events.filterIsInstance<LaunchEvent.Log>().map { it.code }
+    private fun logs(d: LaunchDecision) = d.events.mapNotNull { when (it) {
+        is LaunchEvent.Log -> it.code
+        is LaunchEvent.LazyLog -> it.code()
+        else -> null
+    } }
     private fun reason(d: LaunchDecision) = (d as? LaunchDecision.Inject)?.reason
     private fun self(target: String, data: String? = null, flags: Int = 0x1801c000) = link(target).copy(
         callingPackage = target, action = LaunchRules.ACTION_MAIN, dataString = data, flags = flags,
@@ -109,8 +114,8 @@ class LaunchDeciderTest {
     @Test fun activityForResultDoesNotPreemptOriginalChain() {
         val e = Environment(); val m = LaunchMemory()
         assertTrue(pre(link().copy(requestCode = 100), e, m, 1000) is LaunchDecision.PassThrough)
-        // 旧注入分支只补 options，仍保留 resultTo；不把“禁止重发”改成新的全局注入规则。
-        assertEquals("inter_app", reason(inject(link().copy(requestCode = 100), e, m, 1000)))
+        // 2026111002 起注入路径同样放行：应用间等结果的启动保持全屏。
+        assertNull(reason(inject(link().copy(requestCode = 100), e, m, 1000)))
     }
     @Test fun inAppNavigationWithoutNewTaskPassesThrough() {
         val e = Environment(); val m = LaunchMemory()
@@ -187,6 +192,38 @@ class LaunchDeciderTest {
         )
         e.controlCenter += x
         cases.forEach { (s, expected) -> assertEquals("$s", expected, reason(inject(s, e, m, 1000))) }
+    }
+    @Test fun launcherCardOffKeepsCardsFullscreenOnly() {
+        val e = Environment().apply { zoomLaunchCard = false }; val m = LaunchMemory()
+        val base = link().copy(hasResultTo = false, callingPackage = "system.source")
+        val card = inject(base.copy(callingPackage = launcher, hasResultTo = true), e, m, 1000)
+        assertNull(reason(card))
+        assertTrue(card.events.any { it is LaunchEvent.Log && it.code == "ZOOM_SKIP_LAUNCHER_CARD_$x" })
+        // 控制中心经桌面代发的记录不能把卡片再接回小窗。
+        e.controlCenter += x
+        assertNull(reason(inject(base.copy(callingPackage = launcher, hasResultTo = true), e, m, 1000)))
+        // 其余桌面入口不变。
+        assertEquals("launcher_settings",
+            reason(inject(base.copy(callingPackage = launcher, componentPackage = "com.android.settings"), e, m, 1000)))
+        assertEquals("launcher_shortcut", reason(inject(base.copy(callingPackage = x, componentPackage = x,
+            action = LaunchRules.ACTION_MAIN, realCallingUid = e.launcherUid, flags = 0x14000000), e, m, 1000)))
+    }
+    @Test fun interAppLaunchWaitingForResultStaysFullscreen() {
+        val e = Environment(); val m = LaunchMemory()
+        val jump = link().copy(action = "com.example.LOGIN", dataString = null)
+        assertEquals("inter_app", reason(inject(jump, e, m, 1000)))
+        val waiting = inject(jump.copy(requestCode = 7), e, m, 1000)
+        assertNull(reason(waiting))
+        assertTrue(waiting.events.any { it is LaunchEvent.Log && it.code == "ZOOM_SKIP_WAITS_FOR_RESULT_$x" })
+        // 桌面卡片不按应用间处理，等结果也照常小窗。
+        assertEquals("launcher_card", reason(inject(jump.copy(callingPackage = launcher, requestCode = 7), e, m, 1000)))
+    }
+    @Test fun captureActionsStayFullscreen() {
+        val e = Environment(); val m = LaunchMemory()
+        for (action in LaunchRules.CAPTURE_ACTIONS) {
+            assertNull(reason(inject(link().copy(action = action, dataString = null), e, m, 1000)))
+            assertNull(reason(inject(link().copy(action = action, dataString = null, hasResultTo = false), e, m, 1000)))
+        }
     }
     @Test fun secondaryUserSourcesMatchByAppId() {
         val e = Environment(); val m = LaunchMemory()

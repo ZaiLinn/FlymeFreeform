@@ -3,6 +3,8 @@ package io.github.zailinn.flymefreeform.hook.launch.decision
 /** 日志与返回指纹更新按旧调用顺序交给执行层，不在判定时产生副作用。 */
 internal sealed interface LaunchEvent {
     data class Log(val code: String, val tag: String = "FlymeFreeform") : LaunchEvent
+    /** 高频日志：内容由执行层在详细日志开启时才求值。 */
+    class LazyLog(val code: () -> String, val tag: String = "FlymeFreeform") : LaunchEvent
     data class ReturnUpdate(val check: LaunchMemory.ReturnCheck) : LaunchEvent
 }
 

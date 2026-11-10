@@ -153,6 +153,9 @@ internal class FrameworkConnectionRepository(private val context: Context) {
     fun setZoomLaunch(enabled: Boolean) =
         updateSettings { it.copy(zoomLaunch = enabled) }
 
+    fun setZoomLaunchCard(enabled: Boolean) =
+        updateSettings { it.copy(zoomLaunchCard = enabled) }
+
     fun setBlacklistPackage(packageName: String, excluded: Boolean) =
         updateSettings { it.copy(blacklistPackages =
             io.github.zailinn.flymefreeform.config.BlacklistEdits.apply(it.blacklistPackages, packageName, excluded)) }

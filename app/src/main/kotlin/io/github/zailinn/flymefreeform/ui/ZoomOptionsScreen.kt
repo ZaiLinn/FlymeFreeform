@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.SwipeUp
 import androidx.compose.material.icons.rounded.TouchApp
@@ -41,6 +42,7 @@ internal fun ZoomOptionsScreen(
     onZoomMaxWindowCountChange: (Int) -> Unit,
     onZoomAllowAnyAppChange: (Boolean) -> Unit,
     onZoomLaunchChange: (Boolean) -> Unit,
+    onZoomLaunchCardChange: (Boolean) -> Unit,
     onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
     onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
     onNavigateToBlacklist: () -> Unit,
@@ -85,6 +87,16 @@ internal fun ZoomOptionsScreen(
                     summary = stringResource(R.string.zoom_launch_summary),
                     enabled = enabled,
                     startAction = { PreferenceIcon(Icons.Rounded.SwapHoriz, enabled) },
+                )
+                // 小窗跳转的分项：总开关关闭时置灰，取值保留。
+                val cardEnabled = enabled && state.settings.zoomLaunch
+                SwitchPreference(
+                    checked = state.settings.zoomLaunchCard,
+                    onCheckedChange = onZoomLaunchCardChange,
+                    title = stringResource(R.string.zoom_launch_card_title),
+                    summary = stringResource(R.string.zoom_launch_card_summary),
+                    enabled = cardEnabled,
+                    startAction = { PreferenceIcon(Icons.Rounded.Dashboard, cardEnabled) },
                 )
                 SwitchPreference(
                     checked = state.settings.zoomAllowAnyApp,

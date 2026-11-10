@@ -34,6 +34,7 @@ internal object ModulePreferences {
     const val KEY_ZOOM_ALLOW_ANY_APP = "zoom_allow_any_app"
     /** 小窗跳转总开关：通知、控制中心、应用互跳、桌面快捷项与卡片统一受它控制。 */
     const val KEY_ZOOM_LAUNCH = "zoom_launch"
+    const val KEY_ZOOM_LAUNCH_CARD = "zoom_launch_card"
 
     /** 旧版三个分项开关的键，仅用于升级后迁移取值。 */
     const val LEGACY_KEY_ZOOM_LAUNCH_NOTIFICATION = "zoom_launch_notification"
@@ -67,6 +68,7 @@ internal object ModulePreferences {
     const val MAX_ZOOM_MAX_WINDOW_COUNT = 5
     const val DEFAULT_ZOOM_ALLOW_ANY_APP = false
     const val DEFAULT_ZOOM_LAUNCH = false
+    const val DEFAULT_ZOOM_LAUNCH_CARD = true
     const val DEFAULT_RADIAL_KEEP_OPEN = false
     const val DEFAULT_PANEL_NATIVE_LIST = false
     const val DEFAULT_RADIAL_CENTER_PREVIEW = false

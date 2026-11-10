@@ -74,6 +74,7 @@ class ModuleMain : XposedModule() {
                     "_zcount" + settings.zoomMaxWindowCount +
                     "_zapp" + settings.zoomAllowAnyApp +
                     "_zlaunch" + settings.zoomLaunch +
+                    "_zcard" + settings.zoomLaunchCard +
                     "_keep" + settings.radialKeepOpen +
                     "_pnative" + settings.panelNativeList +
                     "_center" + settings.radialCenterPreview +

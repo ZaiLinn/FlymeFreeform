@@ -21,6 +21,7 @@ class SettingsTransferTest {
                 handleSwipeUpToMiniEnabled = false,
                 blacklistPackages = listOf("com.game.one", "com.game.two"),
                 zoomLaunch = true,
+                zoomLaunchCard = false,
                 radialMultiArcEnabled = true,
                 radialArcCount = 3,
                 iconShape = 1,

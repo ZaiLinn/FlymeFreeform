@@ -99,6 +99,8 @@
     <string name="zoom_allow_any_app_summary">原本不支持自由浮窗的应用也能以小窗打开</string>
     <string name="zoom_launch_title">小窗跳转</string>
     <string name="zoom_launch_summary">在更多场景下使用自由浮窗打开，遵循上方的排除列表</string>
+    <string name="zoom_launch_card_title">桌面卡片小窗</string>
+    <string name="zoom_launch_card_summary">点击桌面与负一屏卡片时以小窗打开，关闭后保持全屏</string>
     <string name="handle_swipe_up_to_mini_title">快速上滑</string>
     <string name="handle_swipe_up_to_mini_summary">在普通小窗底部横条快速上滑，切换为迷你小窗</string>
 

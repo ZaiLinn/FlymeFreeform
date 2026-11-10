@@ -4,6 +4,8 @@ package io.github.zailinn.flymefreeform.hook.launch.decision
 internal interface LaunchEnvironment {
     val enabled: Boolean
     val zoomLaunch: Boolean
+    /** 桌面卡片是否参与小窗跳转；关闭时卡片点击保持全屏。 */
+    val zoomLaunchCard: Boolean
     val systemUiUid: Int
     val launcherUid: Int
     fun deviceUnlocked(refresh: Boolean): Boolean

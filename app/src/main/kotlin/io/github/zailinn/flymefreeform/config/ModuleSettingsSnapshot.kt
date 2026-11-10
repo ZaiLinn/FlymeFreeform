@@ -30,6 +30,8 @@ internal data class ModuleSettingsSnapshot(
      * 关闭后不改写任何启动，全部入口回到系统默认的全屏行为。
      */
     val zoomLaunch: Boolean = ModulePreferences.DEFAULT_ZOOM_LAUNCH,
+    /** 小窗跳转·桌面卡片：关闭后点击桌面与负一屏卡片保持全屏，其余入口不变。仅在 [zoomLaunch] 开启时有意义。 */
+    val zoomLaunchCard: Boolean = ModulePreferences.DEFAULT_ZOOM_LAUNCH_CARD,
     /** 扇形呼出后未选择任何条目时保持显示，不自动收起。 */
     val radialKeepOpen: Boolean = ModulePreferences.DEFAULT_RADIAL_KEEP_OPEN,
     val radialMaxItems: Int = ModulePreferences.DEFAULT_RADIAL_MAX_ITEMS,
@@ -85,6 +87,7 @@ internal data class ModuleSettingsSnapshot(
             )
             .putBoolean(ModulePreferences.KEY_ZOOM_ALLOW_ANY_APP, zoomAllowAnyApp)
             .putBoolean(ModulePreferences.KEY_ZOOM_LAUNCH, zoomLaunch)
+            .putBoolean(ModulePreferences.KEY_ZOOM_LAUNCH_CARD, zoomLaunchCard)
             // 旧分项键不再写入，升级后一并清除，避免残留值干扰排查。
             .remove(ModulePreferences.LEGACY_KEY_ZOOM_LAUNCH_NOTIFICATION)
             .remove(ModulePreferences.LEGACY_KEY_ZOOM_LAUNCH_CONTROL_CENTER)
@@ -267,6 +270,10 @@ internal data class ModuleSettingsSnapshot(
                     ModulePreferences.DEFAULT_ZOOM_ALLOW_ANY_APP,
                 ),
                 zoomLaunch = readZoomLaunch(preferences),
+                zoomLaunchCard = preferences.getBoolean(
+                    ModulePreferences.KEY_ZOOM_LAUNCH_CARD,
+                    ModulePreferences.DEFAULT_ZOOM_LAUNCH_CARD,
+                ),
                 radialKeepOpen = preferences.getBoolean(
                     ModulePreferences.KEY_RADIAL_KEEP_OPEN,
                     ModulePreferences.DEFAULT_RADIAL_KEEP_OPEN,

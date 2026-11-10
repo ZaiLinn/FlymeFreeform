@@ -75,12 +75,10 @@ internal class ActivityStarterZoomInjector(
                         executePreempt(input, LaunchDecider.decidePreempt(input.snapshot, environmentFor(input), memory(input), now()))
                     }.onFailure { module.log(Log.WARN, TAG, "ZOOM_PREEMPT_FAILED", it) }.getOrDefault(false)
                     if (preempted) 0 else {
+                        // 未接管时 starter 与 Request 没有被改动，注入判定复用同一份快照，不再重读。
                         if (input != null) runCatching {
-                            val injectionInput = readSnapshot(chain.thisObject, method.name)
-                            if (injectionInput != null) {
-                                traceEntry(injectionInput)
-                                executeInject(injectionInput, LaunchDecider.decideInject(injectionInput.snapshot, environmentFor(injectionInput), memory(injectionInput), now()))
-                            }
+                            traceEntry(input)
+                            executeInject(input, LaunchDecider.decideInject(input.snapshot, environmentFor(input), memory(input), now()))
                         }.onFailure { module.log(Log.WARN, TAG, "ZOOM_INJECT_FAILED", it) }
                         chain.proceed()
                     }
@@ -168,6 +166,7 @@ internal class ActivityStarterZoomInjector(
     private fun applyEvents(decision: LaunchDecision, memory: LaunchMemory) {
         decision.events.forEach { event -> when (event) {
             is LaunchEvent.Log -> ModuleLog.debug(event.tag) { event.code }
+            is LaunchEvent.LazyLog -> ModuleLog.debug(event.tag, event.code)
             is LaunchEvent.ReturnUpdate -> memory.apply(event.check)
         } }
         if (decision is LaunchDecision.PassThrough) decision.log?.let { code -> ModuleLog.debug(TAG) { code } }
@@ -194,10 +193,10 @@ internal class ActivityStarterZoomInjector(
                     val key = input.userId.toString() + "|" + decision.target
                     val fingerprint = decision.linkKey ?: input.intent.toUri(0)
                     val ticket = pendingReopens.acquire(key, fingerprint) ?: return true
-                    val settings = configuration.snapshot
                     ModuleLog.debug(TAG) { "ZOOM_REOPEN_SCHEDULED_" + input.snapshot.stage + "_" + decision.target }
                     effects.reopenInZoom(decision.target, input.userId, LaunchRules.REOPEN_DELAY_MS,
-                        valid = { configuration.snapshot == settings && platform.enabled && platform.zoomLaunch &&
+                        // 只看与小窗跳转有关的现值；比较整份设置会让 400 ms 内改任何无关设置都退回全屏。
+                        valid = { platform.enabled && platform.zoomLaunch &&
                             platform.deviceUnlocked(false) && !platform.isExcluded(decision.target) &&
                             effects.isUserVisible(input.userId) },
                         start = { zoom ->
@@ -245,8 +244,8 @@ internal class ActivityStarterZoomInjector(
         applyEvents(decision, memory)
         if (decision !is LaunchDecision.Inject) return
         val reason = decision.reason
-        input.intent.putExtra(ZoomLaunchSpec.EXTRA_APPLIED, 1)
         if (input.snapshot.optionsAlreadyZoom) {
+            input.intent.putExtra(ZoomLaunchSpec.EXTRA_APPLIED, 1)
             ModuleLog.debug(TAG) { "ZOOM_NATIVE_CHANNEL_" + reason }
             return
         }
@@ -258,8 +257,12 @@ internal class ActivityStarterZoomInjector(
         val uid = input.snapshot.callingUid
         val applied = runCatching { callSetActivityOptions(input.starter, bundle, pid, uid) }
             .getOrDefault(false)
-        if (!applied) runCatching { writeRequestOptions(input.starter, input.request, bundle, pid, uid) }
-            .onFailure { module.log(Log.WARN, TAG, "ZOOM_OPTIONS_WRITE_FAILED", it) }
+        val written = applied || runCatching { writeRequestOptions(input.starter, input.request, bundle, pid, uid) }
+            .onFailure { module.log(Log.WARN, TAG, "ZOOM_OPTIONS_WRITE_FAILED", it) }.isSuccess
+        // 两种写法都失败：本次按原参数启动（全屏）。不打已注入标记、不记跳转关系与自重启、不收面板，
+        // 否则之后的反向启动会被误认成「返回发起方」。execute 阶段失败时 executeRequest 阶段还会再试一次。
+        if (!written) return
+        input.intent.putExtra(ZoomLaunchSpec.EXTRA_APPLIED, 1)
         ModuleLog.debug(TAG) { "ZOOM_INJECTED_" + reason }
         if (decision.markSelfRelaunch && decision.selfTarget != null) memory.markZoomed(decision.selfTarget, true, now())
         if (reason == "notification") effects.collapseShade(LaunchRules.SHADE_COLLAPSE_DELAY_MS)
@@ -309,20 +312,26 @@ internal class ActivityStarterZoomInjector(
     private fun startZoomWindow(intent: Intent, targetPackage: String, userId: Int): Boolean =
         runCatching {
             if (userId < 0) return false
-            val managerClass = Class.forName(ZOOM_MANAGER_CLASS)
-            val instance = managerClass.getMethod("getInstance").invoke(null) ?: return false
-            val start =
-                managerClass.getMethod(
-                    "startZoomWindow",
-                    Intent::class.java,
-                    Bundle::class.java,
-                    Int::class.javaPrimitiveType,
-                    String::class.java,
-                )
+            val (getInstance, start) = zoomStart ?: return false
+            val instance = getInstance.invoke(null) ?: return false
             val result =
                 start.invoke(instance, intent, zoomBundle(), userId, targetPackage) as? Int
             result != null && result >= 0
         }.getOrDefault(false)
+
+    /** OplusZoomWindowManager 的 getInstance 与 startZoomWindow，只解析一次；解析失败为 null，抢占一律不成立。 */
+    private val zoomStart: Pair<java.lang.reflect.Method, java.lang.reflect.Method>? by lazy {
+        runCatching {
+            val managerClass = Class.forName(ZOOM_MANAGER_CLASS)
+            managerClass.getMethod("getInstance") to managerClass.getMethod(
+                "startZoomWindow",
+                Intent::class.java,
+                Bundle::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+        }.getOrNull()
+    }
 
     private fun zoomBundle(): Bundle =
         ZoomLaunchSpec.bundle(null).apply {
@@ -353,11 +362,17 @@ internal class ActivityStarterZoomInjector(
         }
     }
 
-    private fun toBundle(options: Any): Bundle? = runCatching {
-        val method = options.javaClass.getMethod("toBundle")
-        method.isAccessible = true
-        method.invoke(options) as? Bundle
-    }.getOrNull()
+    /** 按类缓存 toBundle：SafeActivityOptions 没有该方法，逐次 getMethod 每次启动都要抛一次 NoSuchMethodException。 */
+    private fun toBundle(options: Any): Bundle? {
+        val slot = toBundleMethods.getOrPut(options.javaClass) {
+            MethodSlot(runCatching { options.javaClass.getMethod("toBundle").also { it.isAccessible = true } }.getOrNull())
+        }
+        return runCatching { slot.method?.invoke(options) as? Bundle }.getOrNull()
+    }
+
+    private class MethodSlot(val method: java.lang.reflect.Method?)
+
+    private val toBundleMethods = java.util.concurrent.ConcurrentHashMap<Class<*>, MethodSlot>()
 
     private fun callSetActivityOptions(
         starter: Any,
@@ -365,16 +380,18 @@ internal class ActivityStarterZoomInjector(
         callingPid: Int,
         callingUid: Int,
     ): Boolean {
-        val method =
-            starter.javaClass.declaredMethods.firstOrNull { candidate ->
+        val method = setOptionsMethods.getOrPut(starter.javaClass) {
+            MethodSlot(starter.javaClass.declaredMethods.firstOrNull { candidate ->
                 candidate.name == "setActivityOptions" &&
                     candidate.parameterCount == 3 &&
                     candidate.parameterTypes[0] == Bundle::class.java
-            } ?: return false
-        method.isAccessible = true
+            }?.also { it.isAccessible = true })
+        }.method ?: return false
         method.invoke(starter, bundle, callingPid, callingUid)
         return true
     }
+
+    private val setOptionsMethods = java.util.concurrent.ConcurrentHashMap<Class<*>, MethodSlot>()
 
     /**
      * setActivityOptions 不可用时，以调用方身份构造 SafeActivityOptions 直接写入 Request.activityOptions。

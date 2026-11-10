@@ -8,6 +8,7 @@ import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.INTER_AP
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SYSTEM_UI_PACKAGE
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.LAUNCHER_PACKAGE
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.PICKER_ACTIONS
+import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.CAPTURE_ACTIONS
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SHARE_SHEET_COMPONENTS
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SYSTEM_SERVER_PACKAGE
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SYSTEM_NOTIFICATION_TARGETS
@@ -61,11 +62,12 @@ internal object LaunchDecider {
             fromSystemUi -> env.zoomLaunch && target !in SKIP_TARGETS_FOR_TILES && !s.optionsFullscreen
             else -> false
         }
-        events += LaunchEvent.Log("ZOOM_DECISION_" + s.stage +
+        // 每次未带 resultTo 的启动都会走到这里，日志串只在详细日志开启时才拼。
+        events += LaunchEvent.LazyLog({ "ZOOM_DECISION_" + s.stage +
             "_ok" + eligible + "_rt" + (if (s.hasResultTo) 1 else 0) +
             "_self" + (if (selfRelaunch) 1 else 0) + "_link" + (if (plainLink) 1 else 0) +
             "_pi" + (if (s.hasPendingIntent) 1 else 0) + "_su" + (if (fromSystemUi) 1 else 0) +
-            "_cp" + callingPackage + "_tg" + target)
+            "_cp" + callingPackage + "_tg" + target })
         if (!eligible) return pass()
         return LaunchDecision.Preempt(target, linkKey, selfRelaunch, callingPackage, events.toList())
     }
@@ -180,8 +182,26 @@ internal object LaunchDecider {
             return null
         }
 
-        // 携带 resultTo 的跨应用启动：调用方在等待结果。
-        // 本方法只补 ActivityOptions，不另起一次启动，结果回传链路保持完整。
+        if (s.action in CAPTURE_ACTIONS) {
+            events += LaunchEvent.Log("ZOOM_SKIPPED_CAPTURE")
+            return null
+        }
+        // 应用间等结果的启动（startActivityForResult，requestCode >= 0）保持全屏：拍照、第三方登录、支付确认
+        // 这类页面是发起方流程的一步，开成小窗后发起方仍在前台等结果。与抢占路径的 waitsForResult 一致。
+        // 只管应用间：桌面与 SystemUI 发起的启动、应用内跳转（同包）不在此列；
+        // 普通 startActivity 也带 resultTo，但 requestCode 为 -1，不受影响。
+        if (hasResultTo && s.requestCode >= 0 &&
+            callingPackage != null &&
+            callingPackage != target &&
+            callingPackage != LAUNCHER_PACKAGE &&
+            callingPackage != SYSTEM_UI_PACKAGE
+        ) {
+            events += LaunchEvent.Log("ZOOM_SKIP_WAITS_FOR_RESULT_" + target)
+            return null
+        }
+
+        // 携带 resultTo 的跨应用启动（不等结果）。
+        // 本方法只补 ActivityOptions，不另起一次启动。
         //
         // 桌面同样以 startActivityForResult 启动应用，若不做区分会把每一次图标点击
         // 都当成应用间跳转；系统界面自身的启动由后续分支处理。两者一律保持全屏。
@@ -224,6 +244,12 @@ internal object LaunchDecider {
         ) {
             return "inter_app"
         }
+        // 「桌面卡片」分项关闭：卡片点击保持全屏，直接放行，不再落到后面的分支。
+        // 桌面快捷项、快捷菜单的设置入口特征不同（见 launcherOriginReason），不受影响。
+        if (!env.zoomLaunchCard && isLauncherCard(s, target, callingPackage, hasResultTo)) {
+            events += LaunchEvent.Log("ZOOM_SKIP_LAUNCHER_CARD_" + target)
+            return null
+        }
         launcherOriginReason(s, env, target, callingPackage, realCallingUid, requestRealUid, hasResultTo)
             ?.let { return it }
         if (target in SKIP_TARGETS) return null
@@ -241,10 +267,7 @@ internal object LaunchDecider {
         // 磁贴类启动携带 quicksettings 相关 action，交给注入器处理；
         // 其余来自 SystemUI 的启动属于通知栏或横幅点击，已由浮窗通道接管，
         // 再次注入会覆盖系统参数，表现为窗口延迟出现且无过渡动画。
-        val fromSystemUi =
-            systemUiUid > 0 &&
-                (sameApp(callingUid, systemUiUid) || sameApp(realCallingUid, systemUiUid) || sameApp(requestRealUid, systemUiUid))
-        if (fromSystemUi) {
+        if (trustedSource) {
             val action = s.action.orEmpty()
             val isTileLaunch =
                 action.contains("quicksettings", ignoreCase = true) ||
@@ -263,18 +286,17 @@ internal object LaunchDecider {
         return null
     }
 
+    /**
+     * 卡片页：桌面以 startActivityForResult 打开，携带卡片自己的 action。
+     * 确认类界面（安装器、分享面板）列在排除名单内，仍按全屏处理。
+     */
+    private fun isLauncherCard(s: LaunchSnapshot, target: String, callingPackage: String?, hasResultTo: Boolean): Boolean =
+        callingPackage == LAUNCHER_PACKAGE && hasResultTo && s.action != ACTION_MAIN && target !in LAUNCHER_CARD_SKIP
+
     private fun launcherOriginReason(s: LaunchSnapshot, env: LaunchEnvironment, target: String,
         callingPackage: String?, realCallingUid: Int, requestRealUid: Int, hasResultTo: Boolean): String? {
         val fromLauncherProcess = callingPackage == LAUNCHER_PACKAGE
-        // 卡片页：桌面以 startActivityForResult 打开，携带卡片自己的 action。
-        // 确认类界面（安装器、分享面板）列在排除名单内，仍按全屏处理。
-        if (fromLauncherProcess &&
-            hasResultTo &&
-            s.action != ACTION_MAIN &&
-            target !in LAUNCHER_CARD_SKIP
-        ) {
-            return "launcher_card"
-        }
+        if (isLauncherCard(s, target, callingPackage, hasResultTo)) return "launcher_card"
         // 快捷菜单里的系统设置入口（应用详情 / 应用信息）：桌面直接发起，不带 resultTo。
         // 设置页整包在保持全屏名单内，仅这一条发起路径放行；应用内跳设置、权限授权页不变。
         if (fromLauncherProcess &&
