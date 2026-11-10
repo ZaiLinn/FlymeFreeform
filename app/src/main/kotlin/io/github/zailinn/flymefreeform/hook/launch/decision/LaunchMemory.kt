@@ -24,6 +24,18 @@ internal class LaunchMemory {
     @Synchronized fun selfRelaunch(target: String, now: Long): Boolean = target == lastZoomTarget &&
         now - lastZoomAt < LaunchRules.SELF_RELAUNCH_WINDOW_MS && lastZoomHops < LaunchRules.MAX_SELF_RELAUNCH_HOPS
 
+    @Synchronized fun protectFlow(targetPackage: String, callerPackage: String?, now: Long) {
+        if (lastZoomTarget == targetPackage) {
+            lastZoomTarget = null; lastZoomAt = 0L; lastZoomHops = 0
+        }
+        if (lastLinkKey?.split('|', limit = 3)?.getOrNull(1) == targetPackage) {
+            lastLinkKey = null; lastLinkAt = 0L
+        }
+        if (!callerPackage.isNullOrEmpty() && callerPackage != targetPackage &&
+            callerPackage != LaunchRules.LAUNCHER_PACKAGE && callerPackage != LaunchRules.SYSTEM_UI_PACKAGE
+        ) record(callerPackage, targetPackage, now)
+    }
+
     @Synchronized fun record(callerPackage: String, targetPackage: String, now: Long) {
         caller = callerPackage; target = targetPackage; recordedAt = now
     }

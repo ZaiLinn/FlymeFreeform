@@ -40,12 +40,13 @@ class LaunchDeciderTest {
     )
     private fun pre(s: LaunchSnapshot, e: Environment, m: LaunchMemory, time: Long) = LaunchDecider.decidePreempt(s, e, m, time)
     private fun inject(s: LaunchSnapshot, e: Environment, m: LaunchMemory, time: Long) = LaunchDecider.decideInject(s, e, m, time)
-    private fun applyEvents(d: LaunchDecision, m: LaunchMemory) {
+    private fun applyEvents(d: LaunchDecision, m: LaunchMemory, time: Long = 1000) {
         d.events.filterIsInstance<LaunchEvent.ReturnUpdate>().forEach { m.apply(it.check) }
+        d.events.filterIsInstance<LaunchEvent.ProtectFlow>().forEach { m.protectFlow(it.target, it.caller, time) }
     }
     /** 模拟执行层成功之后的更新；失败路径不更新启动/重复记忆。 */
     private fun successful(d: LaunchDecision, m: LaunchMemory, time: Long) {
-        applyEvents(d, m)
+        applyEvents(d, m, time)
         when (d) {
             is LaunchDecision.Preempt -> {
                 m.markZoomed(d.target, d.selfRelaunch, time)
@@ -162,6 +163,255 @@ class LaunchDeciderTest {
         val d = inject(link(), e, m, 1000)
         assertTrue(d is LaunchDecision.PassThrough); assertEquals(listOf("ZOOM_SKIPPED_EXCLUDED_$x"), logs(d))
     }
+    @Test fun installerTargetsBypassEveryZoomEntrance() {
+        val targets = listOf(
+            "com.rosan.installer.x.revived", "com.rosan.installer.x.revived.debug",
+        )
+        for (target in targets) {
+            val e = Environment().apply { shown = target; owner = telegram; controlCenter += target }
+            val m = LaunchMemory().apply {
+                markZoomed(target, false, 900)
+                markLink("$telegram|$target|https://example.test/post/42", 900)
+            }
+            val base = link(target)
+            val sources = listOf(
+                base, base.copy(requestCode = 7),
+                base.copy(action = "com.google.android.gms.auth.GOOGLE_SIGN_IN", dataString = null),
+                base.copy(componentPackage = null, resolvedTarget = target),
+                self(target, "https://example.test/post/42"), self(target),
+                base.copy(callingPackage = launcher),
+                base.copy(callingPackage = systemUi, hasPendingIntent = true),
+                base.copy(zoomSourceExtra = 1, realCallingUid = e.systemUiUid),
+                base.copy(quickSettingsExtra = true, realCallingUid = e.systemUiUid),
+                base.copy(callingPackage = "android.ext.services", hasResultTo = false),
+            )
+            for (source in sources) {
+                assertTrue("preempt: $source", pre(source, e, m, 1000) is LaunchDecision.PassThrough)
+                assertTrue("inject: $source", inject(source, e, m, 1000) is LaunchDecision.PassThrough)
+            }
+            e.implicit = target
+            assertTrue(inject(base.copy(componentPackage = null), e, m, 1000) is LaunchDecision.PassThrough)
+        }
+    }
+    @Test fun googleNormalLinksAndNotificationsRemainEligibleForZoom() {
+        for (target in listOf(
+            "com.google.android.googlequicksearchbox", "com.google.android.youtube",
+            "com.google.android.apps.maps", "com.google.android.gm",
+            "com.google.android.apps.photos", "com.android.vending", "com.google.android.gms",
+        )) {
+            val e = Environment(); val m = LaunchMemory()
+            assertFalse(LaunchRules.isZoomLaunchBlocked(target))
+            assertTrue(pre(link(target), e, m, 1000) is LaunchDecision.Preempt)
+            assertEquals("inter_app", reason(inject(link(target), e, m, 1000)))
+            assertEquals("notification", reason(inject(link(target).copy(
+                callingPackage = systemUi, hasPendingIntent = true,
+            ), e, m, 1000)))
+        }
+    }
+    @Test fun chromeVariantsRemainEligibleForZoom() {
+        for (target in listOf(chrome, "com.chrome.beta", "com.chrome.dev", "com.chrome.canary")) {
+            val e = Environment(); val m = LaunchMemory()
+            assertFalse(LaunchRules.isZoomLaunchBlocked(target))
+            assertTrue(pre(link(target), e, m, 1000) is LaunchDecision.Preempt)
+            assertEquals("inter_app", reason(inject(link(target), e, m, 1000)))
+        }
+        assertFalse(LaunchRules.isZoomLaunchBlocked("com.googleexample.app"))
+        assertFalse(LaunchRules.isZoomLaunchBlocked("com.rosan.installer.x.revivedother"))
+    }
+    @Test fun authorizationSkipsPreemptDuplicateReopenAndInjection() {
+        val e = Environment().apply { shown = x; owner = telegram }
+        val entries = listOf(
+            link("com.google.android.gms").copy(
+                action = "com.google.android.gms.auth.GOOGLE_SIGN_IN", dataString = null,
+            ),
+            link("com.google.android.gms").copy(
+                componentClass = "com.google.android.gms.auth.api.signin.ui.SignInActivity",
+            ),
+            link().copy(action = "com.example.LOGIN", dataString = null),
+            link().copy(componentClass = "com.example.OAuthActivity"),
+            link().copy(componentClass = "com.example.SSOActivity"),
+            link().copy(componentClass = "com.example.SignInActivity"),
+            link().copy(componentPackage = null, resolvedTarget = x, resolvedClass = "com.example.AuthActivity"),
+            link().copy(authorizationExtra = true),
+            link(chrome).copy(dataString = "https://id.example.test/oauth2/authorize"),
+            link(chrome).copy(dataString = "https://id.example.test/start?client_id=app&redirect_uri=app%3A%2F%2Fdone"),
+            link().copy(dataString = "myapp://callback?code=example&state=example"),
+            link().copy(dataString = "myapp://callback#access_token=example&state=example"),
+        )
+        for (entry in entries) {
+            val m = LaunchMemory().apply {
+                markZoomed(x, false, 900)
+                markLink("$telegram|${entry.preemptTarget}|${entry.dataString}", 900)
+            }
+            val variants = listOf(entry, entry.copy(hasResultTo = false),
+                entry.copy(requestCode = 7), entry.copy(zoomSourceExtra = 1, realCallingUid = e.systemUiUid),
+                entry.copy(callingPackage = x, flags = LaunchRules.FLAG_ACTIVITY_NEW_TASK))
+            for (source in variants) {
+                val preempt = pre(source, e, m, 1000)
+                val injection = inject(source, e, m, 1000)
+                assertTrue("preempt: $source", preempt is LaunchDecision.PassThrough)
+                assertTrue("inject: $source", injection is LaunchDecision.PassThrough)
+                assertEquals(listOf("ZOOM_SKIP_AUTHORIZATION"), logs(preempt))
+                assertEquals(listOf("ZOOM_SKIP_AUTHORIZATION"), logs(injection))
+            }
+        }
+    }
+    @Test fun normalLinksAndSharingAreNotAuthorization() {
+        for (source in listOf(
+            link().copy(componentClass = "com.example.ProcessorActivity"),
+            link().copy(action = "android.intent.action.SEND"),
+            link(chrome).copy(dataString = "https://example.test/article?state=published"),
+            link(chrome).copy(dataString = "https://example.test/article?code=42"),
+            link(chrome).copy(dataString = "https://example.test/article?next=%2Flogin"),
+        )) {
+            assertFalse(AuthorizationLaunch.matches(source))
+            assertEquals("inter_app", reason(inject(source, Environment(), LaunchMemory(), 1000)))
+        }
+    }
+    @Test fun operationFlowsBypassEveryZoomDecisionBeforeAnySideEffects() {
+        val e = Environment().apply { shown = x; owner = telegram }
+        val base = link()
+        val operations = LaunchRules.PICKER_ACTIONS.map { base.copy(action = it) } +
+            LaunchRules.CAPTURE_ACTIONS.map { base.copy(action = it) } + listOf(
+                base.copy(action = "android.intent.action.EDIT"),
+                base.copy(action = "android.intent.action.INSERT"),
+                base.copy(action = "android.intent.action.INSERT_OR_EDIT"),
+                base.copy(action = "com.android.camera.action.CROP"),
+                base.copy(action = "com.google.zxing.client.android.SCAN"),
+                base.copy(action = "android.app.action.CONFIRM_DEVICE_CREDENTIAL"),
+                base.copy(action = "android.content.pm.action.REQUEST_PERMISSIONS"),
+                base.copy(operationExtra = true),
+                base.copy(componentPackage = "com.google.android.permissioncontroller"),
+                base.copy(dataString = "alipays://platformapi/schemepay?order=example"),
+                base.copy(dataString = "https://bank.example.test/checkout?order=example"),
+            ) + listOf(
+                "H5PayActivity", "PayEntryActivity", "CashierActivity", "MspContainerActivity",
+                "BankVerifyActivity", "RealNameActivity", "IdentityVerificationActivity",
+                "ScanActivity", "QRCodeActivity", "CaptureActivity", "CropActivity",
+                "FaceVerifyActivity", "LivenessActivity", "BiometricActivity",
+                "FingerprintActivity", "AppLockActivity", "AppUnlockPasswordActivity",
+                "ConfirmDeviceCredentialActivity", "GrantPermissionsActivity",
+                "ContactPickerActivity", "LocationPickerActivity", "SelectLocationActivity",
+            ).map { base.copy(componentClass = "com.example.$it") }
+        for (operation in operations) {
+            // 显式、隐式与解析后的组件都必须使用相同规则。
+            val resolved = operation.copy(componentClass = null, resolvedClass = operation.componentClass)
+            val variants = listOf(operation, resolved,
+                operation.copy(hasResultTo = false, hasPendingIntent = true),
+                operation.copy(zoomSourceExtra = 1, realCallingUid = e.systemUiUid),
+                operation.copy(quickSettingsExtra = true, realCallingUid = e.systemUiUid),
+                operation.copy(callingPackage = x, flags = LaunchRules.FLAG_ACTIVITY_NEW_TASK))
+            for (source in variants) {
+                val m = LaunchMemory().apply {
+                    markZoomed(x, false, 900)
+                    markLink("${source.callingPackage}|${source.preemptTarget}|${source.dataString}", 900)
+                }
+                val preempt = pre(source, e, m, 1000)
+                val injection = inject(source, e, m, 1000)
+                assertTrue("preempt: $source", preempt is LaunchDecision.PassThrough)
+                assertTrue("inject: $source", injection is LaunchDecision.PassThrough)
+                assertEquals(2, preempt.events.size)
+                assertEquals(logs(preempt), logs(injection))
+            }
+        }
+    }
+    @Test fun resultRequestsCannotBypassProtectionWithNotificationMarkersOrRelayMemory() {
+        val e = Environment().apply { shown = x; owner = telegram }
+        val m = LaunchMemory().apply { markZoomed(x, false, 900) }
+        for (source in listOf(
+            link().copy(requestCode = 7, zoomSourceExtra = 1, realCallingUid = e.systemUiUid),
+            self(x).copy(requestCode = 7),
+            link().copy(requestCode = 7, hasPendingIntent = true),
+        )) {
+            assertTrue(pre(source, e, m, 1000) is LaunchDecision.PassThrough)
+            val d = inject(source, e, m, 1000)
+            assertTrue(d is LaunchDecision.PassThrough)
+            assertEquals(listOf("ZOOM_SKIP_WAITS_FOR_RESULT_$x"), logs(d))
+        }
+    }
+    @Test fun credentialRequestsAndSelectorsBypassZoomEvenWithoutResultProtocol() {
+        val e = Environment().apply { shown = x; owner = telegram }
+        val base = link()
+        val entries = listOf(
+            base.copy(credentialExtra = true, componentClass = "com.example.MainActivity"),
+            base.copy(action = "android.settings.REQUEST_SET_AUTOFILL_SERVICE"),
+            base.copy(action = "android.settings.CREDENTIAL_PROVIDER"),
+            base.copy(action = "android.settings.ADD_ACCOUNT_SETTINGS"),
+            base.copy(action = "android.credentials.ui.action.SELECT"),
+            base.copy(action = "androidx.credentials.GET_CREDENTIAL"),
+            base.copy(action = "com.example.SELECT_ACCOUNT"),
+            base.copy(action = "com.example.FIDO2.SIGN_REQUEST"),
+        ) + listOf(
+            "AutofillActivity", "AutofillUnlockActivity", "PasskeyActivity", "WebAuthnActivity",
+            "Fido2Activity", "CredentialSelectorActivity", "CredentialManagerUi",
+            "GetCredentialActivity", "CreateCredentialActivity", "PasswordPickerActivity",
+            "PasswordSelectionActivity", "ChooseAccountActivity", "ChooseTypeAndAccountActivity",
+            "AccountPickerActivity", "AccountChooserActivity", "GrantCredentialsPermissionActivity",
+        ).map { base.copy(componentClass = "com.example.$it") }
+        for (entry in entries) {
+            for (source in listOf(entry,
+                entry.copy(hasResultTo = false, hasPendingIntent = true),
+                entry.copy(requestCode = 7),
+                entry.copy(zoomSourceExtra = 1, realCallingUid = e.systemUiUid),
+                entry.copy(componentClass = null, resolvedClass = entry.componentClass),
+                entry.copy(callingPackage = x, flags = LaunchRules.FLAG_ACTIVITY_NEW_TASK),
+            )) {
+                val m = LaunchMemory().apply {
+                    markZoomed(x, false, 900)
+                    markLink("${source.callingPackage}|$x|${source.dataString}", 900)
+                }
+                val first = pre(source, e, m, 1000)
+                assertTrue("preempt: $source", first is LaunchDecision.PassThrough)
+                assertTrue("inject: $source", inject(source, e, m, 1000) is LaunchDecision.PassThrough)
+                assertEquals(listOf("ZOOM_SKIP_CREDENTIAL"), logs(first))
+                assertTrue(first.events.any { it is LaunchEvent.ProtectFlow })
+                applyEvents(first, m, 1000)
+                assertFalse(m.selfRelaunch(x, 1100))
+            }
+        }
+    }
+    @Test fun passwordManagerHomepageAndCredentialDocumentationRemainNormalContent() {
+        val e = Environment(); val m = LaunchMemory()
+        for (target in listOf("com.example.passwordmanager", "com.example.autofill", chrome)) {
+            val source = link(target).copy(componentClass = "$target.MainActivity",
+                dataString = "https://example.test/docs/passkeys")
+            assertNull(ProtectedLaunch.reason(source))
+            assertTrue(pre(source, e, m, 1000) is LaunchDecision.Preempt)
+            assertEquals("inter_app", reason(inject(source, e, m, 1000)))
+        }
+    }
+    @Test fun protectedOperationClearsOldZoomRelayAndPreservesUnmarkedReturnToCaller() {
+        val e = Environment(); val m = LaunchMemory()
+        successful(pre(link(), e, m, 1000), m, 1000)
+        assertTrue(m.selfRelaunch(x, 1100))
+        val operation = link().copy(componentClass = "com.example.CashierActivity")
+        val d = pre(operation, e, m, 1200)
+        applyEvents(d, m, 1200)
+        assertFalse(m.selfRelaunch(x, 1250))
+        assertFalse(m.duplicate("$telegram|$x|https://example.test/post/42", 1250))
+        // SDK 中转为普通 MAIN 页面也不能再继承之前的小窗自重启记录。
+        assertTrue(inject(self(x), e, m, 1250) is LaunchDecision.PassThrough)
+        val back = link(telegram).copy(callingPackage = x)
+        val returning = pre(back, e, m, 1400)
+        assertTrue(returning is LaunchDecision.PassThrough)
+        applyEvents(returning, m, 1400)
+        assertTrue(inject(back, e, m, 1400) is LaunchDecision.PassThrough)
+    }
+    @Test fun ordinaryContentInWalletBankCameraAndMapPackagesStillUsesZoom() {
+        val e = Environment(); val m = LaunchMemory()
+        for (target in listOf("com.example.wallet", "com.example.bank", "com.example.camera", "com.google.android.apps.maps")) {
+            val source = link(target).copy(componentClass = "$target.MainActivity")
+            assertNull(ProtectedLaunch.reason(source))
+            assertTrue(pre(source, e, m, 1000) is LaunchDecision.Preempt)
+            assertEquals("inter_app", reason(inject(source, e, m, 1000)))
+        }
+        for (source in listOf(
+            link().copy(componentClass = "com.example.DisplayActivity"),
+            link().copy(componentClass = "com.example.ContactListActivity"),
+            link().copy(dataString = "https://example.test/display?next=/payment"),
+            link().copy(dataString = "geo:0,0?q=example"),
+        )) assertNull(ProtectedLaunch.reason(source))
+    }
     @Test fun pickerActionsStayBeforeInterAppInjection() {
         val e = Environment(); val m = LaunchMemory()
         LaunchRules.PICKER_ACTIONS.forEach { action ->
@@ -210,7 +460,7 @@ class LaunchDeciderTest {
     }
     @Test fun interAppLaunchWaitingForResultStaysFullscreen() {
         val e = Environment(); val m = LaunchMemory()
-        val jump = link().copy(action = "com.example.LOGIN", dataString = null)
+        val jump = link().copy(action = "com.example.OPEN", dataString = null)
         assertEquals("inter_app", reason(inject(jump, e, m, 1000)))
         val waiting = inject(jump.copy(requestCode = 7), e, m, 1000)
         assertNull(reason(waiting))

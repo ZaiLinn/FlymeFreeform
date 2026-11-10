@@ -10,5 +10,6 @@ internal class PendingLaunches {
     }
     @Synchronized fun current(key: String, ticket: Ticket): Boolean = pending[key] === ticket
     @Synchronized fun finish(key: String, ticket: Ticket) { if (pending[key] === ticket) pending.remove(key) }
+    @Synchronized fun cancel(key: String) { pending.remove(key) }
     @Synchronized fun clear() { pending.clear() }
 }

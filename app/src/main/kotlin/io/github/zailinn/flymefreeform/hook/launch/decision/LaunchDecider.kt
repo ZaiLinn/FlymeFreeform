@@ -4,11 +4,9 @@ import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.ACTION_M
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.ACTION_VIEW
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.FLAG_ACTIVITY_NEW_TASK
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.ACTION_GLOBAL_SEARCH
-import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.INTER_APP_FULLSCREEN_TARGETS
+import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.isZoomLaunchBlocked
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SYSTEM_UI_PACKAGE
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.LAUNCHER_PACKAGE
-import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.PICKER_ACTIONS
-import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.CAPTURE_ACTIONS
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SHARE_SHEET_COMPONENTS
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SYSTEM_SERVER_PACKAGE
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules.SYSTEM_NOTIFICATION_TARGETS
@@ -24,13 +22,18 @@ internal object LaunchDecider {
         fun pass() = LaunchDecision.PassThrough(events = events.toList())
         if (s.preempting) return pass()
         if (!env.enabled) return pass()
+        ProtectedLaunch.reason(s)?.let {
+            events += LaunchEvent.Log(it)
+            s.preemptTarget?.let { target -> events += LaunchEvent.ProtectFlow(target, s.callingPackage) }
+            return pass()
+        }
         val callingPackage = s.callingPackage.orEmpty()
         val systemUiUid = env.systemUiUid
         val fromSystemUi = systemUiUid > 0 &&
             (sameApp(s.callingUid, systemUiUid) || sameApp(s.realCallingUid, systemUiUid) ||
                 sameApp(s.requestRealCallingUid, systemUiUid))
         val target = s.preemptTarget ?: return pass()
-        if (env.isExcluded(target)) {
+        if (isZoomLaunchBlocked(target) || env.isExcluded(target)) {
             events += LaunchEvent.Log("ZOOM_SKIPPED_EXCLUDED_" + target)
             return pass()
         }
@@ -76,7 +79,11 @@ internal object LaunchDecider {
         if (!env.enabled || !env.zoomLaunch || s.zoomAppliedExtra || !env.deviceUnlocked(false))
             return LaunchDecision.PassThrough()
         val target = s.preemptTarget ?: env.resolveImplicitTarget() ?: return LaunchDecision.PassThrough()
-        if (env.isExcluded(target)) return LaunchDecision.PassThrough(events = listOf(
+        ProtectedLaunch.reason(s, target)?.let {
+            return LaunchDecision.PassThrough(events = listOf(
+                LaunchEvent.Log(it), LaunchEvent.ProtectFlow(target, s.callingPackage)))
+        }
+        if (isZoomLaunchBlocked(target) || env.isExcluded(target)) return LaunchDecision.PassThrough(events = listOf(
             LaunchEvent.Log("ZOOM_SKIPPED_EXCLUDED_" + target)))
         val events = mutableListOf<LaunchEvent>()
         val systemUiUid = env.systemUiUid
@@ -109,7 +116,7 @@ internal object LaunchDecider {
         target: String, s: LaunchSnapshot, now: Long, events: MutableList<LaunchEvent>): Boolean =
         env.zoomLaunch && s.action == ACTION_VIEW && callingPackage.isNotEmpty() && callingPackage != target &&
             callingPackage != LAUNCHER_PACKAGE && callingPackage != SYSTEM_UI_PACKAGE && target !in SKIP_TARGETS &&
-            target !in INTER_APP_FULLSCREEN_TARGETS && !env.isExcluded(target) && env.isThirdParty(callingPackage) &&
+            !isZoomLaunchBlocked(target) && !env.isExcluded(target) && env.isThirdParty(callingPackage) &&
             !returning(memory, callingPackage, target, now, events)
 
     private fun returning(memory: LaunchMemory, callingPackage: String?, target: String, now: Long,
@@ -175,31 +182,6 @@ internal object LaunchDecider {
             return if (target !in SKIP_TARGETS) "notification" else null
         }
 
-        // 文件选择类界面保持全屏：这类页面依赖完整的列表与预览布局，
-        // 在小窗内可用性差，且调用频繁。该判定先于其余分支，避免被结果回传条件命中。
-        if (s.action in PICKER_ACTIONS) {
-            events += LaunchEvent.Log("ZOOM_SKIPPED_PICKER")
-            return null
-        }
-
-        if (s.action in CAPTURE_ACTIONS) {
-            events += LaunchEvent.Log("ZOOM_SKIPPED_CAPTURE")
-            return null
-        }
-        // 应用间等结果的启动（startActivityForResult，requestCode >= 0）保持全屏：拍照、第三方登录、支付确认
-        // 这类页面是发起方流程的一步，开成小窗后发起方仍在前台等结果。与抢占路径的 waitsForResult 一致。
-        // 只管应用间：桌面与 SystemUI 发起的启动、应用内跳转（同包）不在此列；
-        // 普通 startActivity 也带 resultTo，但 requestCode 为 -1，不受影响。
-        if (hasResultTo && s.requestCode >= 0 &&
-            callingPackage != null &&
-            callingPackage != target &&
-            callingPackage != LAUNCHER_PACKAGE &&
-            callingPackage != SYSTEM_UI_PACKAGE
-        ) {
-            events += LaunchEvent.Log("ZOOM_SKIP_WAITS_FOR_RESULT_" + target)
-            return null
-        }
-
         // 携带 resultTo 的跨应用启动（不等结果）。
         // 本方法只补 ActivityOptions，不另起一次启动。
         //
@@ -209,17 +191,6 @@ internal object LaunchDecider {
         //
         // 该判定先于 SKIP_TARGETS：分享面板由系统包承载，但属于用户主动发起的跳转，
         // 按组件精确放行，其余系统组件维持全屏。
-        // 链接一律全屏打开的应用（见 INTER_APP_FULLSCREEN_TARGETS），不注入小窗参数。
-        // 只管应用间跳转：桌面卡片、快捷项与 SystemUI 入口照常。
-        if (target in INTER_APP_FULLSCREEN_TARGETS &&
-            callingPackage != null &&
-            callingPackage != target &&
-            callingPackage != LAUNCHER_PACKAGE &&
-            callingPackage != SYSTEM_UI_PACKAGE
-        ) {
-            events += LaunchEvent.Log("ZOOM_SKIP_INTER_APP_FULLSCREEN_" + target)
-            return null
-        }
         if (hasResultTo &&
             callingPackage != null &&
             callingPackage != LAUNCHER_PACKAGE &&
@@ -231,7 +202,7 @@ internal object LaunchDecider {
         }
         // 跨应用启动：发起方与目标均为第三方应用且不同包。
         //
-        // 登录、分享、深链等场景的递交方式各不相同：有的携带 resultTo，有的经
+        // 分享、深链等场景的递交方式各不相同：有的携带 resultTo，有的经
         // PendingIntent，有的两者皆无，仅凭这些标志无法覆盖全部入口。
         // 此分支以「双方都是用户安装的应用」为准，覆盖上述分支未命中的情形；
         // 系统组件与桌面图标点击已在前置条件中排除。

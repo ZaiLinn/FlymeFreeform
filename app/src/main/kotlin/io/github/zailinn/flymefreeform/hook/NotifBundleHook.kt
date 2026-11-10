@@ -5,7 +5,9 @@ import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.zailinn.flymefreeform.hook.launch.ZoomLaunchSpec
+import io.github.zailinn.flymefreeform.hook.launch.LaunchIntentSnapshot
 import io.github.zailinn.flymefreeform.hook.launch.decision.LaunchRules
+import io.github.zailinn.flymefreeform.hook.launch.decision.ProtectedLaunch
 import io.github.zailinn.flymefreeform.log.ModuleLog
 
 /**
@@ -71,8 +73,16 @@ internal class NotifBundleHook(
             return
         }
         // 排除列表内的应用保持系统原有启动方式。
-        if (pkg != null && configuration.snapshot.isBlacklisted(pkg)) {
+        if (pkg != null && (LaunchRules.isZoomLaunchBlocked(pkg) || settings.isBlacklisted(pkg))) {
             ModuleLog.debug(TAG) { "NOTIF_BUNDLE_SKIPPED_EXCLUDED " + pkg }
+            return
+        }
+        // 在删除转场、收起横幅和写入小窗参数前检查真实通知落点。
+        // 读取失败时保持全屏，避免在无法识别用途时接管验证/支付流程。
+        val protection = notificationProtection(entry)
+        if (protection != null) {
+            ZoomLaunchSpec.markFullscreen(bundle)
+            ModuleLog.debug(TAG) { "NOTIF_BUNDLE_PROTECTED " + protection }
             return
         }
         if (targetInForeground(entry)) {
@@ -243,6 +253,25 @@ internal class NotifBundleHook(
         val result = linkedSetOf(sbn.packageName)
         sbn.notification?.contentIntent?.creatorPackage?.let(result::add)
         return result
+    }
+
+    /** getIntent 会查询 AMS，仅在 SystemUI 通知入口使用，绝不移入 ActivityStarter 的 WM 锁内。 */
+    private fun notificationProtection(entry: Any?): String? = runCatching {
+        val sbn = entry?.javaClass?.getMethod("getSbn")?.invoke(entry)
+            as? android.service.notification.StatusBarNotification
+            ?: return@runCatching "UNKNOWN_INTENT"
+        val pending = sbn.notification?.contentIntent ?: return@runCatching "UNKNOWN_INTENT"
+        val intent = pendingIntentGetIntent?.invoke(pending) as? android.content.Intent
+            ?: return@runCatching "UNKNOWN_INTENT"
+        val snapshot = LaunchIntentSnapshot.read(intent)
+        if (snapshot.preemptTarget?.let {
+                LaunchRules.isZoomLaunchBlocked(it) || configuration.snapshot.isBlacklisted(it)
+            } == true) return@runCatching "EXCLUDED_TARGET"
+        ProtectedLaunch.reason(snapshot)
+    }.getOrDefault("UNKNOWN_INTENT")
+
+    private val pendingIntentGetIntent by lazy {
+        runCatching { android.app.PendingIntent::class.java.getMethod("getIntent") }.getOrNull()
     }
 
     @Suppress("DEPRECATION")

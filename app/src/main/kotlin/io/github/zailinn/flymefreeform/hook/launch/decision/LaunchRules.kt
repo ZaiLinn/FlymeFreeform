@@ -15,13 +15,10 @@ internal object LaunchRules {
     /** 系统全局搜索：桌面下滑呼出的搜索页，始终全屏。 */
     const val ACTION_GLOBAL_SEARCH = "android.search.action.GLOBAL_SEARCH"
 
-    /**
-     * 应用间跳转一律保持全屏的目标。
-     *
-     * 曾放入 X（com.twitter.android）；用户 2026-11-08 改为让 X 也以小窗打开，中转页重启改由
-     * 注入处理（见启动执行层），名单暂空，保留给以后实测小窗不可用的应用。
-     */
-    val INTER_APP_FULLSCREEN_TARGETS = emptySet<String>()
+    /** 安装器保持系统启动方式；登录提供方按授权入口识别，不整包排除。 */
+    fun isZoomLaunchBlocked(packageName: String): Boolean =
+        packageName == "com.rosan.installer.x.revived" ||
+            packageName.startsWith("com.rosan.installer.x.revived.")
 
     /** 中转页自我重启的识别窗口与最多接管次数。 */
     const val SELF_RELAUNCH_WINDOW_MS = 3_000L
@@ -47,6 +44,11 @@ internal object LaunchRules {
         "android.intent.action.OPEN_DOCUMENT",
         "android.intent.action.OPEN_DOCUMENT_TREE",
         "android.intent.action.PICK",
+        "android.intent.action.CREATE_DOCUMENT",
+        "android.intent.action.PICK_ACTIVITY",
+        "android.provider.action.PICK_IMAGES",
+        "androidx.activity.result.contract.action.PICK_IMAGES",
+        "androidx.activity.result.contract.action.PICK_IMAGES_GET_CONTENT",
         )
 
     /** 拍照、录像：取景界面在小窗里不可用，且调用方在等结果，始终全屏。 */
@@ -55,6 +57,11 @@ internal object LaunchRules {
         "android.media.action.IMAGE_CAPTURE",
         "android.media.action.IMAGE_CAPTURE_SECURE",
         "android.media.action.VIDEO_CAPTURE",
+        "android.provider.action.MOTION_PHOTO_CAPTURE",
+        "android.provider.action.MOTION_PHOTO_CAPTURE_SECURE",
+        "android.media.action.STILL_IMAGE_CAMERA",
+        "android.media.action.STILL_IMAGE_CAMERA_SECURE",
+        "android.media.action.VIDEO_CAMERA",
         )
 
     /**

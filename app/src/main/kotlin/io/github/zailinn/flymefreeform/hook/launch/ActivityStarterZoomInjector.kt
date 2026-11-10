@@ -126,10 +126,8 @@ internal class ActivityStarterZoomInjector(
             ?: request?.let { readField(it, "activityInfo") } as? android.content.pm.ActivityInfo
         val resolved = activity?.packageName
         val options = optionsBundle(starter, request)
-        val snapshot = LaunchSnapshot(
-            stage = stage, action = intent.action, dataString = intent.dataString, flags = intent.flags,
-            componentPackage = intent.component?.packageName, componentClass = intent.component?.className,
-            explicitPackage = intent.getPackage(), resolvedTarget = resolved,
+        val snapshot = LaunchIntentSnapshot.read(intent, activity?.name).copy(
+            stage = stage, resolvedTarget = resolved,
             callingPackage = request?.let { readField(it, "callingPackage") } as? String,
             callingUid = uid, rawCallingUid = rawUid, realCallingUid = intField(starter, "mRealCallingUid"),
             requestRealCallingUid = request?.let { intField(it, "realCallingUid") } ?: -1,
@@ -163,11 +161,15 @@ internal class ActivityStarterZoomInjector(
         }
     }
 
-    private fun applyEvents(decision: LaunchDecision, memory: LaunchMemory) {
+    private fun applyEvents(decision: LaunchDecision, memory: LaunchMemory, userId: Int) {
         decision.events.forEach { event -> when (event) {
             is LaunchEvent.Log -> ModuleLog.debug(event.tag) { event.code }
             is LaunchEvent.LazyLog -> ModuleLog.debug(event.tag, event.code)
             is LaunchEvent.ReturnUpdate -> memory.apply(event.check)
+            is LaunchEvent.ProtectFlow -> {
+                pendingReopens.cancel(userId.toString() + "|" + event.target)
+                memory.protectFlow(event.target, event.caller, now())
+            }
         } }
         if (decision is LaunchDecision.PassThrough) decision.log?.let { code -> ModuleLog.debug(TAG) { code } }
     }
@@ -180,7 +182,7 @@ internal class ActivityStarterZoomInjector(
 
     private fun executePreempt(input: StarterInput, decision: LaunchDecision): Boolean {
         val memory = memory(input)
-        applyEvents(decision, memory)
+        applyEvents(decision, memory, input.userId)
         return when (decision) {
             is LaunchDecision.SwallowDuplicate -> true
             is LaunchDecision.ReopenInZoom -> {
@@ -241,7 +243,7 @@ internal class ActivityStarterZoomInjector(
 
     private fun executeInject(input: StarterInput, decision: LaunchDecision) {
         val memory = memory(input)
-        applyEvents(decision, memory)
+        applyEvents(decision, memory, input.userId)
         if (decision !is LaunchDecision.Inject) return
         val reason = decision.reason
         if (input.snapshot.optionsAlreadyZoom) {

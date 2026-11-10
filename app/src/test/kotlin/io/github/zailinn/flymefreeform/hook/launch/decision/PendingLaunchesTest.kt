@@ -30,4 +30,17 @@ class PendingLaunchesTest {
         assertTrue(pending.current("0|app", primary))
         assertTrue(pending.current("10|app", profile))
     }
+    @Test fun protectedOperationCancelsOldWorkWithoutAffectingOtherTargetsOrUsers() {
+        val pending = PendingLaunches()
+        val old = pending.acquire("0|app", "link")!!
+        val other = pending.acquire("0|other", "link")!!
+        val profile = pending.acquire("10|app", "link")!!
+        pending.cancel("0|app")
+        assertFalse(pending.current("0|app", old))
+        assertTrue(pending.current("0|other", other))
+        assertTrue(pending.current("10|app", profile))
+        val later = pending.acquire("0|app", "link")!!
+        pending.finish("0|app", old)
+        assertTrue(pending.current("0|app", later))
+    }
 }

@@ -6,6 +6,8 @@ internal sealed interface LaunchEvent {
     /** 高频日志：内容由执行层在详细日志开启时才求值。 */
     class LazyLog(val code: () -> String, val tag: String = "FlymeFreeform") : LaunchEvent
     data class ReturnUpdate(val check: LaunchMemory.ReturnCheck) : LaunchEvent
+    /** 撤销该目标的旧小窗重开与自重启记忆，并保护操作完成后返回发起方的启动。 */
+    data class ProtectFlow(val target: String, val caller: String?) : LaunchEvent
 }
 
 /** 五类结果分别对应原启动、重复吞掉、同步接管、异步重开和参数注入。 */
