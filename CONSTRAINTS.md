@@ -1,6 +1,6 @@
 # FlymeFreeform 实现说明
 
-源码与 GitHub Release 为 1.5.0 / versionCode 2026110916（`main` 已推送，标签 v1.5.0 = `f6601ad`）；设备 1.4.10 / 2026110915。v1.4.10 Release 与标签已删除。包名 `io.github.zailinn.flymefreeform`
+源码与 GitHub Release 为 1.5.1 / versionCode 2026111002（`main` 已推送 `a721c06`，标签 v1.5.1 = `a721c06`）；设备已装 1.5.0 / 2026110916，1.5.1 未装机。v1.4.10 Release 与标签已删除。包名 `io.github.zailinn.flymefreeform`
 源码 `ZaiLinn/FlymeFreeform`（维护者 ZaiLinn；fork 自 `Hoerire/FlymeFreeform` ← `Mangi-11/FlymeFreeform`，致谢见 README）
 工作副本 `~/Documents/Code/FlymeFreeform`（macOS），临时文件 `tmp/`；构建、签名与发布见第六节。
 包名于 2026-11-08 由 `io.github.hoerire.flymefreeform` 改为现名，设备上的旧包名模块需卸载后再装新包。
@@ -260,12 +260,14 @@ PM 缓存（`StarterQueryCache`）开机后的冷窗口靠两处缩短：预热�
 判定已迁入 `hook/launch/decision/LaunchDecider`，无 android.* 依赖；输入为 LaunchSnapshot / LaunchEnvironment，状态为 LaunchMemory。判定只读状态，返回的日志及返回指纹更新由执行层按顺序应用；接管成功后才记链接、目标和跳数。旧函数与新函数一一对应见 `docs/starter-decision-migration.md`，InterAppLaunchTracker 保留为共享同一份内存的薄包装。
 
 全部启动改写受单一开关 `zoomLaunch` 控制：`reasonFor` 首行读它，关闭即返回 null，任何入口都不改写。
+分项开关 `zoomLaunchCard`（键 `zoom_launch_card`，默认开，设置页「桌面卡片小窗」，总开关关闭时置灰）：关闭后第 6 段的卡片入口（`isLauncherCard`）记 `ZOOM_SKIP_LAUNCHER_CARD_<包>` 并直接返回 null，
+不再落到第 7、8 段；长按快捷项、快捷菜单的设置入口与其余各段不变。判定在调用 `launcherOriginReason` 之前，卡片不走抢占路径（`decidePreempt` 对桌面发起、带 resultTo 的启动一律放行），只需改注入路径。
 八段判定，先命中先返回：
 
 1. 来源标记（控制中心磁贴；通知来源 extra 目前无写入方）；SystemUI 发起且启动参数写明全屏（通知目标已在前台）时直接放行全屏，必须先于第 3 段；抢占路径的 SystemUI 分支同样不接管
 2. 排除列表与「返回发起方」识别 —— 放行
 3. 通知点击（发起方 SystemUI + PendingIntent）
-4. 文件选择 —— 始终全屏
+4. 文件选择、拍照录像（`CAPTURE_ACTIONS`）—— 始终全屏；应用间等结果的启动（`resultTo` 且 `requestCode >= 0`，发起方非桌面、非 SystemUI、与目标不同包）—— 保持全屏（`ZOOM_SKIP_WAITS_FOR_RESULT_<包>`），与抢占路径的 `waitsForResult` 一致
 5. 应用间跳转（带 resultTo 的跨包、双方均为第三方的跨包）
 6. 桌面发起（快捷项 / 快捷菜单 / 卡片），实现见 `launcherOriginReason`
 7. system_server 以 MAIN 代发
@@ -290,7 +292,9 @@ PM 缓存（`StarterQueryCache`）开机后的冷窗口靠两处缩短：预热�
 `LAUNCHER_CARD_SKIP` = SKIP_TARGETS + 安装器 + 分享面板 + 桌面自身 + 安全中心：桌面长按菜单的
 「编辑」「上锁」因此不会被开成小窗。
 
-**执行层**（`ActivityStarterZoomInjector`）　原启动参数只用于判定：`Request.activityOptions` 是 SafeActivityOptions、没有 `toBundle()`，
+**执行层**（`ActivityStarterZoomInjector`）　每层钩子只读一次快照，抢占未成立时注入判定复用同一份（未接管时 starter 与 Request 未被改动）；`toBundle`、`setActivityOptions`、zoom 管理器入口的反射结果按类缓存。
+小窗参数两种写法都失败时本次按原参数启动：不打 `EXTRA_APPLIED`、不记跳转关系与自重启、不收面板（否则反向启动会被误判为「返回发起方」）。延迟重开的有效性只看启用、小窗跳转、解锁、排除列表与用户可见，不比较整份设置。
+原启动参数只用于判定：`Request.activityOptions` 是 SafeActivityOptions、没有 `toBundle()`，
 `optionsBundle` 先试 toBundle，不行按 AOSP `mergeActivityOptions` 顺序合并 `mOriginalOptions`、`mCallerOptions`。原参数已带小窗参数时走 `ZOOM_NATIVE_CHANNEL_<reason>`，不再覆盖。
 注入与延迟重开只写纯小窗参数（`ZoomLaunchSpec.bundle(null)`），**不并入原参数**：原参数可能带远程动画、launchTaskId 等受限字段，以 callingUid 重新包装会在 SafeActivityOptions 权限检查抛 SecurityException。
 写入用 `setActivityOptions(Bundle, pid, uid)`，不可用时以 `SafeActivityOptions.fromBundle(Bundle, pid, uid)` 写 `Request.activityOptions`；两种都不可用不接管（`starter.mOptions` 在钩子时刻为 null、之后会被覆盖，写它无效）。
@@ -379,6 +383,8 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 | 面板点击 | `PANEL_CLICK` 的 index / alias / aligned / size / query |
 | 通知 | `NOTIF_BUNDLE_ZOOM` 的 dropped；钩子缺失看 `NOTIF_BUNDLE_HOOKED_*` |
 | 侧边栏目录耗时 | system_server：`SIDEBAR_ENTRY_LIST_READY_cold<0\|1>_prepare<ms>_bind<ms>_first<ms>_total<ms>_n<n>`（INFO，各段相对发起时刻，-1 为未到达；超时为 `SIDEBAR_ENTRY_TIMEOUT_LIST_` 加同样各段）；侧边栏进程：`SIDEBAR_ENTRIES_LIST_READY_wait<ms>_load<ms>_send<ms>_n<n>`（等面板就绪 / 读目录含画图标 / 逐项发送）；重试 `ENTRY_CATALOG_RETRY_<次>_IN_<ms>MS`；本地副本 `SIDEBAR_CATALOG_CACHE_READY_<n>_<ms>MS`，异常 `SIDEBAR_CATALOG_CACHE_*_FAILED` / `_INVALID`；扇形副本 `RADIAL_SNAPSHOT_READY_<n>_<ms>MS`、采用 `SYSTEM_RADIAL_SNAPSHOT_ADOPTED_<n>`（详细日志），异常 `RADIAL_SNAPSHOT_*_FAILED` / `_INVALID`；语言 / 切换用户广播注册失败 `LOCALE_OBSERVER_UNAVAILABLE` / `USER_SWITCH_OBSERVER_UNAVAILABLE` |
+| 等结果 / 拍照保持全屏 | system_server：`ZOOM_SKIP_WAITS_FOR_RESULT_<包>`、`ZOOM_SKIPPED_CAPTURE` |
+| 桌面卡片保持全屏 | system_server：`ZOOM_SKIP_LAUNCHER_CARD_<包>`（「桌面卡片小窗」关闭时点卡片）；配置摘要 `MODULE_CONFIG_READY_…_zcard<true\|false>` |
 | 通知目标已在前台 | SystemUI：`NOTIF_FOREGROUND <前台包> match=<true\|false>`、`NOTIF_BUNDLE_FOREGROUND_FULLSCREEN <包>`；system_server：`ZOOM_SKIP_SYSTEMUI_FULLSCREEN_<包>`；查询异常 `NOTIF_FOREGROUND_QUERY_FAILED`（WARN）；系统包跳过 `NOTIF_BUNDLE_SKIPPED_SYSTEM <包>` |
 | 横幅未移除 | `NOTIF_HEADS_UP_MANAGER_NULL`（未取到实例）/ `NOT_HEADS_UP`（时机过晚） |
 | 扇形被拦 | `SYSTEM_GESTURE_REJECTED_<原因>` |
@@ -425,23 +431,29 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-09（只改源码；未查询或操作设备）
+更新时间：2026-11-10（1.5.1 已推送并发布；未安装、未查询或操作设备）
 
 | 项 | 值 |
 |---|---|
-| 源码 | 1.5.0 / versionCode 2026110916；`main` = `origin/main`，代码 `f7e62d8`（0902–0915）与 `da170ee`（0916 设置页记住上次页面），版本提交 `f6601ad`（标签 v1.5.0）；之后只有文档提交，无未提交代码 |
+| 源码 | 1.5.1 / versionCode 2026111002；`main` = `origin/main` = `a721c06`。提交：`66641bf` feat(zoom)（2026111001 桌面卡片小窗开关、2026111002 等结果与拍照保持全屏、注入失败不记账、快照复用与反射缓存），`a721c06` chore(release) 1.5.1；上一版本提交 `f6601ad`（标签 v1.5.0）。工作区仅本文件与 `docs/dev-history.md` 未提交 |
 | 本版内容 | 1.5.0 = 2026110902–0915（`f7e62d8`：通知前台全屏、启动原参数、starter 冷窗口、侧边栏与扇形本地副本、分身识别、多用户、减少重复工作与占用、设置页按需加载与拼音搜索、1.4.9 闪退修复）+ 2026110916（设置页记住上次页面）。逐条详情见 `docs/dev-history.md` |
-| 测试 | 2026110916：单测 275 项（0 失败、3 跳过），`minifyReleaseWithR8`、lintVitalRelease 通过，R8 产物 dex 无读取不存在的静态字段；未构建 APK、未在设备验证。1.4.10 发布前 `local-release.sh` 通过（272 项）。回归范围见 `docs/regression-2026-11-09.md` |
-| 构建 | 1.5.0 / 2026110916，`out/FlymeFreeform-v1.5.0.apk`（2228527 字节），sha256 `9a8361920fc5941cce7762bf0dd2214c97514d493210a02647b20dba6c43a89e`，release.keystore 签名；`local-release.sh` 通过（单测 275 项 0 失败 3 跳过），包内 dex 无读取不存在的静态字段；已发布为 GitHub Release v1.5.0，未安装 |
-| 上一包 | 1.4.9 / 2026110914，`out/FlymeFreeform-v1.4.9.apk`（2228527 字节），sha256 `21f38bc48df2ccec2715ec0559fbecd78772f63fabe8945736102f99140ad8f3`，release.keystore 签名；用户已自行装机，设置页打开即闪退（`NoSuchFieldError` `$stable`，见 2026110915），模块功能正常 |
-| 设备 | 1.4.10 / 2026110915（22:53 覆盖安装，设置页冷启动正常）。用户装 1.4.9 后已自行重启，系统部分运行的是 1.4.9 的钩子，与 1.4.10 相同（1.4.10 只改设置页），不需再重启 |
+| 测试 | 2026111002：`local-release.sh` 通过（starter 静态检查、单测 278 项 0 失败 3 跳过、R8、签名校验）；未在设备验证。2026111001：单测 276 项（0 失败、3 跳过），`compileReleaseKotlin` 通过；未跑 R8、未构建 APK、未在设备验证。2026110916：单测 275 项（0 失败、3 跳过），`minifyReleaseWithR8`、lintVitalRelease 通过，R8 产物 dex 无读取不存在的静态字段；未构建 APK、未在设备验证。1.4.10 发布前 `local-release.sh` 通过（272 项）。回归范围见 `docs/regression-2026-11-09.md` |
+| 构建 | 1.5.1 / 2026111002，`out/FlymeFreeform-v1.5.1.apk`（2228527 字节），sha256 `8e9ccd2dd6d924ac0687d0f7c19e2ec67e393c429005406f96f7c42a3e3e3161`，release.keystore 签名（CN=ZaiLinn）；aapt2 确认 versionName 1.5.1、versionCode 2026111002；包内 dex 无读取不存在的静态字段；已发布为 GitHub Release v1.5.1（资产 digest 与本地 sha256 一致）；未安装 |
+| 上一包 | 1.5.0 / 2026110916，`out/FlymeFreeform-v1.5.0.apk`（2228527 字节），sha256 `9a8361920fc5941cce7762bf0dd2214c97514d493210a02647b20dba6c43a89e`，release.keystore 签名；`local-release.sh` 通过（单测 275 项 0 失败 3 跳过），包内 dex 无读取不存在的静态字段；已发布为 GitHub Release v1.5.0；23:17 `adb install -r` 装机 |
+| 更早 | 1.4.9 / 2026110914，`out/FlymeFreeform-v1.4.9.apk`（2228527 字节），sha256 `21f38bc48df2ccec2715ec0559fbecd78772f63fabe8945736102f99140ad8f3`，release.keystore 签名；用户已自行装机，设置页打开即闪退（`NoSuchFieldError` `$stable`，见 2026110915），模块功能正常 |
+| 设备 | 1.5.0 / 2026110916（23:17 覆盖安装；从桌面启动设置页，进程存活、crash 缓冲区无本包记录）。系统部分仍是用户装 1.4.9 后重启加载的钩子，1.4.9 → 1.5.0 系统代码未变，不需重启 |
 | 设备另有 | 旧包 `io.github.hoerire.flymefreeform`（2026-11-08 记录仍在，未确认是否已卸载） |
-| GitHub | `ZaiLinn/FlymeFreeform` main 已推送；Release / 标签 v1.3.6、v1.3.7、v1.3.10、v1.4.8、v1.5.0（2026-11-09 发布，Latest，资产 `FlymeFreeform-v1.5.0.apk`，GitHub 记录的 sha256 与本地一致）；v1.4.10 Release 与标签按用户要求已删除；LSPosed 模块仓库未建 |
+| GitHub | `ZaiLinn/FlymeFreeform` main 已推送；Release / 标签 v1.3.6、v1.3.7、v1.3.10、v1.4.8、v1.5.0、v1.5.1（2026-11-10 发布，Latest，资产 `FlymeFreeform-v1.5.1.apk`，GitHub 记录的 sha256 与本地一致）；`gh` 默认仓库是 upstream `Hoerire/FlymeFreeform`，发布须加 `--repo ZaiLinn/FlymeFreeform`；v1.4.10 Release 与标签按用户要求已删除；LSPosed 模块仓库未建 |
 | 侧边栏样本 | 本地有 16.11.3、17.11.2 两个 APK（项目根目录，未入库）；`docs/sidebar-dex-resolution.md` 的回归样本为 16.14.0、16.14.6、17.9.2、17.9.8，尚未加入这两个 |
 
 **待验证**（1.4.10 装机后；先确认设置页能打开、各页不闪退，按进程；2026110914 新增回归与真机边界见 `docs/regression-2026-11-09.md`）
 
 - system_server（必须重启 system_server，会连带 SystemUI）：
+  - 2026111002（1.5.1，未装机）：应用内调相机拍照、调第三方登录 / 支付页（startActivityForResult）→ 全屏，日志 `ZOOM_SKIP_WAITS_FOR_RESULT_<包>` 或 `ZOOM_SKIPPED_CAPTURE`；Telegram 点链接、应用间普通跳转、分享面板仍小窗；
+    通知、卡片、快捷项、磁贴各点一次，`ZOOM_INJECTED_<原因>` 与之前一致（快照改为每层只读一次）；X 小窗中再点链接仍关旧窗重开；不应出现 `ZOOM_OPTIONS_WRITE_FAILED`
+    待查：第三方小组件点击是否记成 `launcher_shortcut`（`ZOOM_TRACE` 的 `pi=1`），若是则不受「桌面卡片小窗」控制
+  - 2026111001（1.5.1，未装机）：关闭「桌面卡片小窗」后点桌面与负一屏卡片 → 全屏打开，日志有 `ZOOM_SKIP_LAUNCHER_CARD_<包>`；长按快捷项、快捷菜单「应用详情」、通知、链接仍小窗；
+    重新打开后卡片恢复小窗（`ZOOM_DECISION` / 注入原因 `launcher_card`）；小窗跳转总开关关闭时该项置灰；设置广播热生效，改开关不需重启
   - 通知：前台全屏应用点自己的通知 → 全屏打开，转场与横幅收起与原生一致；桌面或其他应用在前台、或该应用正在小窗时仍小窗；
     `NOTIF_FOREGROUND` 的前台包正确（为 null 或总是桌面说明 SystemUI 取不到任务列表）；设置类通知全屏；
     `ZOOM_SKIP_SYSTEMUI_FULLSCREEN_` 不应出现在非前台场景（出现说明 ColorOS 自己写了 windowingMode=1）
@@ -469,6 +481,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 **下一步**
 
+1. 1.5.1 待用户决定：装机并重启 system_server（判定代码在 system_server）后验收卡片开关与等结果全屏
 1. 按上面「待验证」清单在设备上验收（钩子已生效，用户自行重启过）；2026110916 装机后：进二级 / 三级页回桌面，`am force-stop` 或等后台冻结清理后再打开，应回到原页面；在首页按返回退出后再开是首页
 2. 把 16.11.3、17.11.2 加进 `docs/sidebar-dex-resolution.md` 回归样本
 3. 卸载旧包 `io.github.hoerire.flymefreeform`
