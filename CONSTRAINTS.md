@@ -1,6 +1,6 @@
 # FlymeFreeform 实现说明
 
-源码与 GitHub Release 为 1.5.1 / versionCode 2026111002（`main` 已推送 `a721c06`，标签 v1.5.1 = `a721c06`）；设备已装 1.5.0 / 2026110916，1.5.1 未装机。v1.4.10 Release 与标签已删除。包名 `io.github.zailinn.flymefreeform`
+源码为 1.5.6 / versionCode 2026111012，已提交并推送（`7583c6f`，main）；已装到设备，20:44 重启 system_server。GitHub Release 为 v1.5.6（Latest）。包名 `io.github.zailinn.flymefreeform`
 源码 `ZaiLinn/FlymeFreeform`（维护者 ZaiLinn；fork 自 `Hoerire/FlymeFreeform` ← `Mangi-11/FlymeFreeform`，致谢见 README）
 工作副本 `~/Documents/Code/FlymeFreeform`（macOS），临时文件 `tmp/`；构建、签名与发布见第六节。
 包名于 2026-11-08 由 `io.github.hoerire.flymefreeform` 改为现名，设备上的旧包名模块需卸载后再装新包。
@@ -106,8 +106,37 @@ config/ apps/ framework/ log/
 
 **扇形菜单**　system_server 内的协调器监听底角指针，手势逻辑在 `CornerGestureEngine`（纯状态机，可单测），
 命中计算在 `RadialGeometry`；浮层由 `CornerRadialOverlayView` 自绘，窗口类型 `TYPE_INPUT_METHOD_DIALOG`(141000)，
-压在输入法与键盘之上，回落 `TYPE_APPLICATION_OVERLAY`(111000)。松手当帧提交启动、复制原生 zoom 参数、
+压在输入法与键盘之上，回落 `TYPE_APPLICATION_OVERLAY`(111000)。松手当帧提交、复制原生 zoom 参数、
 侧边栏连接常驻——三处缺一都会明显变慢。
+
+该窗口类型属于输入法容器：前台是全屏应用时容器挂在该应用的 Activity Surface 下，扇形会被拍进任务快照
+（之后打开该应用时在启动窗口里闪一下）。本机 `services.jar` 已核对：`AbsAppSnapshotController.createSnapshot` 只排除输入法主窗口与导航栏，
+`DisplayContent.computeImeParent` 在 `shouldImeAttachedToApp()` 时返回前台 `ActivityRecord` 的 Surface。快照每次应用退到后台都会重拍，
+被污染的快照会自愈，所以现象偶发、难复现。
+复现步骤（用户 2026-11-10 在 2026111003 上实测出现）：全屏应用里从下角斜向上滑呼出扇形、不选项、继续上滑回桌面，再点该应用图标。防护只有一层：Surface 就绪后 `setSkipScreenshot`
+（快照、截图、录屏、投屏都不含扇形与内置面板）。松手仍当帧启动、浮层自行淡出；只有取屏类工具先移除浮层再等两帧。
+指针监听只旁听不拦截，角落起手的系统手势仍会呼出扇形，未处理（按方向过滤会误伤贴边的扇形项；
+「前台变化即移除」会破坏永久保持、打断手势，试过后按用户要求撤回）。
+保持挂起例外：松手后停在屏幕上的扇形在前台变化、回桌面、最近任务、返回时收起（用户 2026-11-10 要求，`closeRestingKeepOpen`），手势进行中不受影响。
+
+**扇形启动已是迷你小窗的应用**　对迷你小窗再走 `startZoomWindow` 只会把旧任务提前并按启动参数重设位置（无动画跳到中间、仍是迷你尺寸）。
+`launchCommittedEntry` 的普通应用分支先问 `ColorOsMiniWindowRestorer`：在 `FlexibleTaskController.mFlexibleTasks` 里找同包同用户、
+`isTaskInFlexibleState(task, 2)` 的任务，找到就调 `switchState(task, 1, reason)` 并跳过启动。这是系统单击迷你小窗
+（`FlexibleTaskCaptionView.onSingleTapConfirmed`）走的同一入口，带原生放大动画。柔性状态 1 普通、2 迷你。
+反射失败或没有迷你小窗时照常启动。侧边栏条目（由侧边栏进程路由）未接入。
+
+**扇形尺寸**（基准 dp，短边按 400 折算，`RadialIconGeometry` / `RadialArcPlan`）　图标直径 44；默认圆弧半径 242（屏宽 60.5%），所有圆弧数相同。
+圈距与图标缩放按设置的圆弧条数。2–3 条各圈等距 57.2（`arcSpacingDp`：min(图标直径 × 1.3, 保证最内圈不重叠)）。
+4 条各圈半径由 `RadialArcPlan.innerArcRadiiDp` 给出：按相邻两圈图标平均直径 + 同一段空隙分配，最内圈收到角落空白区恰为 50，
+圈距约 50.6 / 48.5 / 46.4，相邻两圈图标边缘相距约 7.7 / 8.1 / 8.3（原等距 47.4 时为 4.5 / 7.0 / 9.3）；外圈半径与图标大小不变。
+`RadialGeometry.layout(innerArcRadii = …)` 按各圈半径排，空白区的「一个圈距」取最内圈与外侧一圈的实际半径差；浮层与设置页预览都传这组半径。
+图标：1–3 条时各圈一样大（对齐 Flyme，其截图三圈直径都约 120px / 1080 宽；原来 2 条 × 0.92、3 条每圈 × 0.95）；4 条保持原设置，内圈逐圈 × 0.95（`RadialIconScale.FOUR_ARC_STEP`）。
+四条圆弧用户要求按原有设置，不参照 Flyme 调整（Flyme 参考图只有三条）。
+四条时放大外圈到 264（66%）试过一版（1.5.4 / 2026111009），用户要求回退。
+圆心相对安全区底边上移 15（`RadialGeometry.BOTTOM_LIFT_BASE_DP`）：对齐 Flyme 截图圆心在底边上方约 40px（1080 宽）。
+扇形窗口实测拿不到导航栏底部边距（本机导航栏 42px，但照片比对显示不上移时圆心在屏幕底边），所以上移量就是离底边的距离。
+Flyme 参考截图量得外圈半径约 660px（约 244 基准 dp），与 242 差不到 1mm，未改。
+设置页「命中范围」预览（`ControlScreen.HitRangePreview`）用同一组函数，改尺寸不用另改预览。
 
 **多圆弧**　第 1 条是默认圆弧（快捷项 +「更多」），内侧圆弧依次向内收一个圈距，容量 5/4/3 且不超过外侧一条减 1
 （`RadialArcPlan.innerCapacities`）。`RadialGeometry.layout` 的 itemCenters 顺序为「默认圆弧快捷项 → 内侧各圈（由外向内）→ 更多」。
@@ -211,7 +240,7 @@ SystemUI 侧不接管 `onNotificationClicked` 一类点击入口（见 `SystemUi
 后请求先画、离开即取消，结果已按外形处理，`LruCache` 12 MiB）按需加载。包变化时 `AppIconLoader.version` 递增（广播时一次、重读入口后再一次），
 可见行以它为键重新取图，作废前开始的任务既不进缓存也不回调。包变化只重读该包；切换语言丢弃全部名称；状态 Loading / Ready / Failed，
 失败时选择页显示重试，读完为空显示「没有可添加的应用」。方形模板 `squareMask` 由仓库在全量读取后取前 30 个应用。侧边栏条目的塑形结果放进 `ShapedIconCache`（4 MiB，按源图身份）。
-设置页页面栈：每次进出页面经 `NavStackStore` 写进本应用 SharedPreferences（`ui_state` / `back_stack`，路由名逗号分隔），冷启动没有保存状态（后台冻结 / 清理工具强行停止或移除任务）时据此恢复，有保存状态时以 rememberSaveable 为准；首页按返回退出时栈只剩首页。
+设置页页面栈：只用 miuix `rememberNavBackStack`（rememberSaveable）随 Activity 保存状态恢复——应用留在后台再点开停在上次页面，从最近任务划掉或进程连同任务状态被清掉后回首页。2026110916 加过的 `NavStackStore`（页面栈写 SharedPreferences）因划掉后台也恢复上次页面，按用户 2026-11-10 要求删除，不要再加回。
 排除列表选择页逐行懒加载（`CardSegment` 用 `squircleSurface` 分角给半径，与 miuix Card 同一种平滑圆角）。搜索（`AppSearch`）去首尾空格，名称、包名包含即命中；查询为纯字母且名称含汉字时另按 ICU 全拼 / 首字母匹配，后台过滤。
 
 **设置广播**　设置页每次改设置都发 `ACTION_PINNED_TARGETS_CHANGED`，带完整快照（`SettingsTransfer.EXTRA_SETTINGS`，
@@ -262,18 +291,24 @@ PM 缓存（`StarterQueryCache`）开机后的冷窗口靠两处缩短：预热�
 全部启动改写受单一开关 `zoomLaunch` 控制：`reasonFor` 首行读它，关闭即返回 null，任何入口都不改写。
 分项开关 `zoomLaunchCard`（键 `zoom_launch_card`，默认开，设置页「桌面卡片小窗」，总开关关闭时置灰）：关闭后第 6 段的卡片入口（`isLauncherCard`）记 `ZOOM_SKIP_LAUNCHER_CARD_<包>` 并直接返回 null，
 不再落到第 7、8 段；长按快捷项、快捷菜单的设置入口与其余各段不变。判定在调用 `launcherOriginReason` 之前，卡片不走抢占路径（`decidePreempt` 对桌面发起、带 resultTo 的启动一律放行），只需改注入路径。
-八段判定，先命中先返回：
+进入下列入口分支前，`ProtectedLaunch` 在抢占与注入两条路径统一放行登录授权、凭据/通行密钥/自动填充/账号选择、支付/验证/扫码、文件选择/保存/裁剪、拍照录像、权限/应用锁及联系人/位置选择。等待结果（`hasResultTo && requestCode >= 0`）除桌面卡片外也前置保护，包含应用内重启与通知来源标记。保护时 `ProtectFlow` 撤销同用户同目标的排队重开，清除旧自重启与重复链接记忆，并登记跨应用返回关系，避免完成操作后返回又被小窗接管。
+
+`LaunchIntentSnapshot` 供 SystemUI 与 starter 共用，只读 Intent；SDK/凭据标记仅检查存在性，不读取凭据内容。`CredentialLaunch` 匹配凭据请求标记、系统设置 action、凭据与账号选择组件；`AuthorizationLaunch` 匹配登录入口及 OAuth 请求/回调。常见自定义入口按 action、组件短类名和 URI 操作路径识别，不对 Google、银行、钱包或密码管理器整包排除。InstallerX Revived（含包名子版本）保留内置排除。自定义/混淆入口仍待真机补漏。
+
+SystemUI 的 `NotifBundleHook` 在改参数、剥离转场、收横幅前读取 PendingIntent 的 Intent，复用上述保护；读取失败或受保护时写全屏并原样交给通知启动。隐藏 `PendingIntent.getIntent()` 会查 AMS，仅在 SystemUI 调用，不放进 starter。通知实际目标也核对排除规则。
+
+其余入口按顺序先命中先返回：
 
 1. 来源标记（控制中心磁贴；通知来源 extra 目前无写入方）；SystemUI 发起且启动参数写明全屏（通知目标已在前台）时直接放行全屏，必须先于第 3 段；抢占路径的 SystemUI 分支同样不接管
 2. 排除列表与「返回发起方」识别 —— 放行
 3. 通知点击（发起方 SystemUI + PendingIntent）
-4. 文件选择、拍照录像（`CAPTURE_ACTIONS`）—— 始终全屏；应用间等结果的启动（`resultTo` 且 `requestCode >= 0`，发起方非桌面、非 SystemUI、与目标不同包）—— 保持全屏（`ZOOM_SKIP_WAITS_FOR_RESULT_<包>`），与抢占路径的 `waitsForResult` 一致
+4. 操作流程已由前置 `ProtectedLaunch` 放行，不再在通知分支之后重复判断
 5. 应用间跳转（带 resultTo 的跨包、双方均为第三方的跨包）
 6. 桌面发起（快捷项 / 快捷菜单 / 卡片），实现见 `launcherOriginReason`
 7. system_server 以 MAIN 代发
 8. SystemUI 自身发起的其余启动，按磁贴 / 通知栏区分
 
-顺序不能调：通知点击与文件选择都带 resultTo，放到第 5 段之后会被抢先命中；控制中心判定依赖发起方信息，必须更晚。
+保护必须早于通知来源标记、重复吞掉、关窗重开与自重启判断；控制中心判定仍位于普通应用间跳转之后。
 
 桌面四类入口只靠发起方字段区分，不看 Intent 内容：
 
@@ -384,10 +419,13 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 | 通知 | `NOTIF_BUNDLE_ZOOM` 的 dropped；钩子缺失看 `NOTIF_BUNDLE_HOOKED_*` |
 | 侧边栏目录耗时 | system_server：`SIDEBAR_ENTRY_LIST_READY_cold<0\|1>_prepare<ms>_bind<ms>_first<ms>_total<ms>_n<n>`（INFO，各段相对发起时刻，-1 为未到达；超时为 `SIDEBAR_ENTRY_TIMEOUT_LIST_` 加同样各段）；侧边栏进程：`SIDEBAR_ENTRIES_LIST_READY_wait<ms>_load<ms>_send<ms>_n<n>`（等面板就绪 / 读目录含画图标 / 逐项发送）；重试 `ENTRY_CATALOG_RETRY_<次>_IN_<ms>MS`；本地副本 `SIDEBAR_CATALOG_CACHE_READY_<n>_<ms>MS`，异常 `SIDEBAR_CATALOG_CACHE_*_FAILED` / `_INVALID`；扇形副本 `RADIAL_SNAPSHOT_READY_<n>_<ms>MS`、采用 `SYSTEM_RADIAL_SNAPSHOT_ADOPTED_<n>`（详细日志），异常 `RADIAL_SNAPSHOT_*_FAILED` / `_INVALID`；语言 / 切换用户广播注册失败 `LOCALE_OBSERVER_UNAVAILABLE` / `USER_SWITCH_OBSERVER_UNAVAILABLE` |
 | 等结果 / 拍照保持全屏 | system_server：`ZOOM_SKIP_WAITS_FOR_RESULT_<包>`、`ZOOM_SKIPPED_CAPTURE` |
+| 操作与凭据流程保护 | system_server：`ZOOM_SKIP_AUTHORIZATION`、`ZOOM_SKIP_CREDENTIAL`、`ZOOM_SKIP_OPERATION`、`ZOOM_SKIPPED_PICKER`；SystemUI：`NOTIF_BUNDLE_PROTECTED <原因>`（`UNKNOWN_INTENT` 表示读取通知落点失败，回退全屏） |
 | 桌面卡片保持全屏 | system_server：`ZOOM_SKIP_LAUNCHER_CARD_<包>`（「桌面卡片小窗」关闭时点卡片）；配置摘要 `MODULE_CONFIG_READY_…_zcard<true\|false>` |
 | 通知目标已在前台 | SystemUI：`NOTIF_FOREGROUND <前台包> match=<true\|false>`、`NOTIF_BUNDLE_FOREGROUND_FULLSCREEN <包>`；system_server：`ZOOM_SKIP_SYSTEMUI_FULLSCREEN_<包>`；查询异常 `NOTIF_FOREGROUND_QUERY_FAILED`（WARN）；系统包跳过 `NOTIF_BUNDLE_SKIPPED_SYSTEM <包>` |
 | 横幅未移除 | `NOTIF_HEADS_UP_MANAGER_NULL`（未取到实例）/ `NOT_HEADS_UP`（时机过晚） |
 | 扇形被拦 | `SYSTEM_GESTURE_REJECTED_<原因>` |
+| 扇形点迷你小窗应用 | `SYSTEM_LAUNCH_MINI_RESTORED_<包>`（走原生退出迷你态，不再启动）；没有这条而后面是 `SYSTEM_LAUNCH_ZOOM_OK_` 说明没找到迷你任务或反射失败 |
+| 扇形闪现 | 闪现时刻有 `SYSTEM_GESTURE_ACTIVATE_` / `SYSTEM_OVERLAY_SHOWN_` 即真呼出（误触发，未处理）；都没有则是旧任务快照。`SYSTEM_OVERLAY_SNAPSHOT_EXCLUSION_FAILED_<异常类>` 表示快照排除失败 |
 | 扇形目录耗时 | `SYSTEM_CATALOG_RADIAL_<ms>MS_<项数>`（扇形就绪）、`SYSTEM_CATALOG_PANEL_ORDER_<ms>MS_<n>`（面板可开）、`SYSTEM_CATALOG_PANEL_<ms>MS_<n>`（图标补齐）；`SYSTEM_CATALOG_ICON_MISSING_<n>` 表示扇形图标读取失败、退回按总数均分 |
 | 呼出时目录状态 | `SYSTEM_OVERLAY_HIT_RANGE_<dp>DP_…_APPS_<n>_PANEL_<n>`；`APPS_0` 后跟 `SYSTEM_CATALOG_EMPTY_REFRESH` 即目录未就绪 |
 | 面板数据接管 | `PANEL_DATA_HOOKS_INSTALLED_<n>`（应为 6：5 个重灌方法 + 标题绑定）；缺哪个看 `PANEL_REFILL_HOOK_UNAVAILABLE_<方法名>` |
@@ -431,22 +469,60 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 ## 十、当前状态
 
-更新时间：2026-11-10（1.5.1 已推送并发布；未安装、未查询或操作设备）
+**2026-11-10 工作归属与最终状态**（按当前源码、版本配置与开发记录核对；本次仅整理文档）：
+
+| 阶段 | 改动及后续版本的最终取值 |
+|---|---|
+| 2026111003 / 构建 1.5.2 | 新增 `AuthorizationLaunch`、`CredentialLaunch`、`ProtectedLaunch`、`LaunchIntentSnapshot`，统一前置保护登录授权、密码/通行密钥/自动填充/账号选择、支付/验证、文件/相机及操作回传流程。`ProtectFlow` 取消同用户同目标旧重开、清除自重启/重复链接记忆并保护返回；通知侧检查实际 PendingIntent 目标，未知目标回退全屏。Google 整包排除已按最终要求撤销，Chrome 与 Google 普通内容跳转仍可小窗；InstallerX Revived 及包名子版本保留排除。单测 290 项、0 失败、3 跳过；Release 构建、签名、对齐通过，产物摘要见下表 |
+| 2026111004 / 首次扇形残影修复 | 加入 `setSkipScreenshot`、退出结束保留 exitRequest、移除前置 INVISIBLE；初版还让所有扇形目标先移除浮层、等待两帧再启动，并添加交接测试。该交接方案后来撤回，不是当前行为 |
+| 2026111005–1006 / 后续调整 | 最终保留快照排除及退出清理；快照标记成功一次后不再每帧反射。所有目标等待两帧、前台变化即移除均按用户要求撤回，`OverlayLaunchHandoff` 及两项测试删除。普通应用/快捷方式恢复松手当帧启动、浮层自行淡出；只有取屏类工具先移除再等两帧。扇形与内置面板不进入快照、截图、录屏或投屏；已有污染快照未主动删除 |
+| 2026111007 / 后续版本已装机 | 保留上述最终修复，并新增迷你小窗原生恢复。1.5.3 于 19:33 安装，19:34 重启 system_server，随后各进程加载模块。这不是 1004 初版交接方案的构建包；扇形与迷你小窗效果待用户实测 |
+| 2026111008 / 当前未构建源码 | 在设备包 1007 之上删除 `NavStackStore` 及三项测试，取消设置页页面栈磁盘持久化，仅保留 Activity 的状态恢复。单测 287 项、0 失败、3 跳过。versionName 仍为 1.5.3，但现有 1.5.3 APK 与设备均是 1007，不含 1008 改动 |
+
+流程保护按标准动作、请求标记、组件名称及链接特征识别，自定义/混淆入口仍需真机补漏。本地单测、构建和签名通过不等于相关流程已完成真机验收。后续安装/重启事实沿用已有开发记录，本次未重新查询设备。
+
+2026111012 验证：local-release.sh 通过（starter 静态检查、单测 289 项，0 失败、3 跳过、R8、zipalign -P 16、v1/v2/v3 签名与校验）；已装机并重启，协调器就绪，无 `_FAILED`；`RADIAL_NATIVE_ICON_SHAPE_UNAVAILABLE`（WARN）自 16:14 起每次重启都有，非本包引入。扇形外观与保持挂起待用户实测。
+
+2026111012 改动（四条圆弧方案 A，已装机）：`RadialArcPlan.innerArcRadiiDp`、`RadialVisualMetrics.innerArcRadii`、`RadialGeometry.layout(innerArcRadii)`，浮层与设置页预览接入；新增测试 `fourArcsBalanceVisibleGapsWithoutMovingOuterArc`。待验证：四条圆弧最外两圈不再几乎相切、三处空隙看起来一致、刚呼出就松手不误选最内圈、最内圈仍好选中。
+
+2026111011 验证（已被上一条覆盖）：:app:testDebugUnitTest 通过（288 项，0 失败、3 跳过）、starter 静态检查通过；未构建、未装机。
+
+2026111011 改动（已随 1.5.6 装机）：① 对齐 Flyme：`RadialIconScale` 1–3 条各圈等大（4 条不变，每圈 × 0.95）；`BOTTOM_LIFT_BASE_DP` 12 → 15（所有条数）。② 保持挂起：`CornerRadialOverlayView.isRestingOpen`（松手未选中、停在屏幕上），协调器在前台变化、homekey / recentapps 时 `closeRestingKeepOpen` 立即移除，日志 `SYSTEM_OVERLAY_KEEP_OPEN_CLOSED_<FOREGROUND|HOMEKEY|RECENTAPPS>`；停着时按返回淡出收起。手指按着、已提交、面板打开时都不处理。待验证：三条圆弧内外圈等大、圆心高度与 Flyme 重合；保持挂起后上滑回桌面、侧滑切应用、点通知进应用、按返回都收起扇形；保持挂起下点选应用仍正常启动、不被截断。
+
+2026111010 验证：local-release.sh 通过（starter 静态检查、单测 288 项，0 失败、3 跳过、R8、zipalign -P 16、v1/v2/v3 签名与校验）；已装机并重启，协调器就绪、无 `_FAILED` / `_UNAVAILABLE` 日志。扇形外观与功能待用户实测。
+
+2026111010 改动（已装机生效）：回退 `RadialArcPlan.outerRadiusDp`、圈距的角落空白区上限及相关调用与测试，四条圆弧恢复半径 242、圈距 47.4；扇形圆心上移 12 保留。已随 1.5.5 装机生效。
+
+2026111009（已装机）：local-release.sh 通过（单测 289 项，0 失败、3 跳过），out/FlymeFreeform-v1.5.4.apk，2228527 字节，sha256 6caf87bd368fa7a23841ed22bc046cfd9c7024aede51c4abd3573c72c2c4767d；19:59:08 安装，restart-gate 重启 system_server；重启后的就绪日志未读取（用户中断）。
+
+2026111009 改动（已装机，外圈部分已在源码回退）：四条圆弧外圈 264、圈距 53.5；圆心上移 12；删除设置页页面栈持久化。
+
+2026111008 验证（已被上一条覆盖）：:app:testDebugUnitTest 通过（287 项，0 失败、3 跳过；少的 3 项是随 NavStackStore 删除的测试）；未构建、未装机。
+
+2026111008 未构建改动：删除 `NavStackStore` 及其测试，`FlymeFreeformNavHost` 恢复为 `rememberNavBackStack<AppRoute>(AppRoute.Settings)`。纯设置页改动，装包即生效，不需重启。设备上残留的 `ui_state` 偏好文件不再读取。待验证：二级页面回桌面后再点开仍在该页；从最近任务划掉后再开回首页。
+
+2026111007 验证：local-release.sh 通过（starter 静态检查、单测 290 项，0 失败、3 跳过、assembleRelease / R8、zipalign -P 16、v1/v2/v3 签名与校验）；已装机并于 19:34 重启 system_server（日志 19:34:45 起有 system 进程的模块记录，SystemUI、桌面、侧边栏随后加载）；扇形不闪现与迷你小窗恢复待用户实测。
+
+2026111007 改动（迷你小窗恢复，已构建装机并重启加载）：扇形选中的应用已是迷你小窗时，改调系统原生 `switchState(task, 1, …)` 放大回普通小窗，不再 `startZoomWindow`。入口从设备拉取的 `oplus-services.jar`（`tmp/fw/`，未入库）反汇编确认。真机待验证：迷你小窗在左上 / 右上时从扇形点该应用 → 带动画放大为普通小窗，日志 `SYSTEM_LAUNCH_MINI_RESTORED_<包>`；普通小窗、未打开的应用行为不变。
+
+2026111004–2026111006 改动（扇形残影，已随 1007 构建装机并重启加载）：最终保留 Surface 就绪后 setSkipScreenshot 一次（成功后不再每帧反射）、退出结束不清空 exitRequest、移除前置 INVISIBLE。「所有目标先移除再等两帧启动」与「前台变化即移除」均按用户要求撤回，松手淡出与当帧启动恢复原样，`OverlayLaunchHandoff` 及其测试已删除。机制见第三节「扇形菜单」，排查见第七节「扇形闪现」。真机待验证：普通应用启动不再闪现（旧污染快照未主动删除）、日志无 `SYSTEM_OVERLAY_SNAPSHOT_EXCLUSION_FAILED_`、键盘上方扇形正常。验证方法即第三节的复现步骤。角落起手的系统手势仍会呼出真扇形（未处理）。
+
+更新时间：2026-11-10（当前源码 1.5.3 / 2026111008 未构建；最近构建及设备包 1.5.3 / 2026111007，已安装并重启加载；工作区未提交）
 
 | 项 | 值 |
 |---|---|
-| 源码 | 1.5.1 / versionCode 2026111002；`main` = `origin/main` = `a721c06`。提交：`66641bf` feat(zoom)（2026111001 桌面卡片小窗开关、2026111002 等结果与拍照保持全屏、注入失败不记账、快照复用与反射缓存），`a721c06` chore(release) 1.5.1；上一版本提交 `f6601ad`（标签 v1.5.0）。工作区仅本文件与 `docs/dev-history.md` 未提交 |
-| 本版内容 | 1.5.0 = 2026110902–0915（`f7e62d8`：通知前台全屏、启动原参数、starter 冷窗口、侧边栏与扇形本地副本、分身识别、多用户、减少重复工作与占用、设置页按需加载与拼音搜索、1.4.9 闪退修复）+ 2026110916（设置页记住上次页面）。逐条详情见 `docs/dev-history.md` |
-| 测试 | 2026111002：`local-release.sh` 通过（starter 静态检查、单测 278 项 0 失败 3 跳过、R8、签名校验）；未在设备验证。2026111001：单测 276 项（0 失败、3 跳过），`compileReleaseKotlin` 通过；未跑 R8、未构建 APK、未在设备验证。2026110916：单测 275 项（0 失败、3 跳过），`minifyReleaseWithR8`、lintVitalRelease 通过，R8 产物 dex 无读取不存在的静态字段；未构建 APK、未在设备验证。1.4.10 发布前 `local-release.sh` 通过（272 项）。回归范围见 `docs/regression-2026-11-09.md` |
-| 构建 | 1.5.1 / 2026111002，`out/FlymeFreeform-v1.5.1.apk`（2228527 字节），sha256 `8e9ccd2dd6d924ac0687d0f7c19e2ec67e393c429005406f96f7c42a3e3e3161`，release.keystore 签名（CN=ZaiLinn）；aapt2 确认 versionName 1.5.1、versionCode 2026111002；包内 dex 无读取不存在的静态字段；已发布为 GitHub Release v1.5.1（资产 digest 与本地 sha256 一致）；未安装 |
-| 上一包 | 1.5.0 / 2026110916，`out/FlymeFreeform-v1.5.0.apk`（2228527 字节），sha256 `9a8361920fc5941cce7762bf0dd2214c97514d493210a02647b20dba6c43a89e`，release.keystore 签名；`local-release.sh` 通过（单测 275 项 0 失败 3 跳过），包内 dex 无读取不存在的静态字段；已发布为 GitHub Release v1.5.0；23:17 `adb install -r` 装机 |
+| 源码 | 1.5.6 / versionCode 2026111012，main 为 `7583c6f`（已推送 `0a4f7b1..7583c6f`）：52f9836 操作流程保护、52604c9 扇形尺寸、d65ee99 快照排除 / 迷你小窗 / 保持挂起、f273419 设置页、7583c6f release。与设备一致 |
+| 本版内容 | 登录授权、支付/银行/实名验证、拍照/扫码/裁剪、文件选择/保存、权限/应用锁、联系人/位置选择、密码/通行密钥/自动填充/账号选择统一前置保护；取消旧重开与自重启记忆并保护返回。通知侧检查真实目标，未知目标回退全屏。Google 普通应用不整包排除；InstallerX Revived 仍排除 |
+| 测试 | 2026111007：local-release.sh 通过（starter 静态检查、单测 290 项，0 失败、3 跳过、assembleRelease / R8、zipalign -P 16、v1/v2/v3 签名与校验）。aapt2 核对版本 1.5.3 / 2026111007，R8 mapping 含 ColorOsMiniWindowRestorer；尚未在设备验证 |
+| 构建 | 1.5.6 / 2026111012，out/FlymeFreeform-v1.5.6.apk（2228527 字节），sha256 74c38411abdad3de471c26790b00503c6a26a33970814d2c612b629ed63b5a0d，release.keystore 签名；已装机，已发布 GitHub Release v1.5.6 |
+| 上一包 | 1.5.5 / 2026111010，sha256 d3286cf0adaf00d4804bd032b84a04aeacc3608d8a6e41df876b301ab2b32079；1.5.4 / 2026111009（66% 外圈，已回退），sha256 6caf87bd368fa7a23841ed22bc046cfd9c7024aede51c4abd3573c72c2c4767d；均未发布。1.5.1 / 2026111002 已发布 GitHub Release v1.5.1 |
 | 更早 | 1.4.9 / 2026110914，`out/FlymeFreeform-v1.4.9.apk`（2228527 字节），sha256 `21f38bc48df2ccec2715ec0559fbecd78772f63fabe8945736102f99140ad8f3`，release.keystore 签名；用户已自行装机，设置页打开即闪退（`NoSuchFieldError` `$stable`，见 2026110915），模块功能正常 |
-| 设备 | 1.5.0 / 2026110916（23:17 覆盖安装；从桌面启动设置页，进程存活、crash 缓冲区无本包记录）。系统部分仍是用户装 1.4.9 后重启加载的钩子，1.4.9 → 1.5.0 系统代码未变，不需重启 |
+| 设备 | 1.5.6 / 2026111012（2026-11-10 20:43:57 `adb install -r`，设备 base.apk sha256 与产物一致）。20:44:00 `restart-gate.sh` 执行 `killall system_server`，新进程 20:44:03 启动，20:44:51 协调器就绪。Android 15，详细日志关闭 |
 | 设备另有 | 旧包 `io.github.hoerire.flymefreeform`（2026-11-08 记录仍在，未确认是否已卸载） |
-| GitHub | `ZaiLinn/FlymeFreeform` main 已推送；Release / 标签 v1.3.6、v1.3.7、v1.3.10、v1.4.8、v1.5.0、v1.5.1（2026-11-10 发布，Latest，资产 `FlymeFreeform-v1.5.1.apk`，GitHub 记录的 sha256 与本地一致）；`gh` 默认仓库是 upstream `Hoerire/FlymeFreeform`，发布须加 `--repo ZaiLinn/FlymeFreeform`；v1.4.10 Release 与标签按用户要求已删除；LSPosed 模块仓库未建 |
+| GitHub | `ZaiLinn/FlymeFreeform` main 已推送；Release / 标签 v1.3.6、v1.3.7、v1.3.10、v1.4.8、v1.5.0、v1.5.1、v1.5.6（2026-11-10 发布，Latest，target `7583c6f`，资产 `FlymeFreeform-v1.5.6.apk`，GitHub 记录的 sha256 与本地一致）；`gh` 默认仓库是 upstream `Hoerire/FlymeFreeform`，发布须加 `--repo ZaiLinn/FlymeFreeform`；v1.4.10 Release 与标签按用户要求已删除；LSPosed 模块仓库未建 |
 | 侧边栏样本 | 本地有 16.11.3、17.11.2 两个 APK（项目根目录，未入库）；`docs/sidebar-dex-resolution.md` 的回归样本为 16.14.0、16.14.6、17.9.2、17.9.8，尚未加入这两个 |
 
-**待验证**（1.4.10 装机后；先确认设置页能打开、各页不闪退，按进程；2026110914 新增回归与真机边界见 `docs/regression-2026-11-09.md`）
+**待验证**（1.5.2 新增：登录、支付/验证、文件/相机、凭据填充与返回、通知回退；均未实机验证。历史项：1.4.10 装机后；先确认设置页能打开、各页不闪退，按进程；2026110914 新增回归与真机边界见 `docs/regression-2026-11-09.md`）
 
 - system_server（必须重启 system_server，会连带 SystemUI）：
   - 2026111002（1.5.1，未装机）：应用内调相机拍照、调第三方登录 / 支付页（startActivityForResult）→ 全屏，日志 `ZOOM_SKIP_WAITS_FOR_RESULT_<包>` 或 `ZOOM_SKIPPED_CAPTURE`；Telegram 点链接、应用间普通跳转、分享面板仍小窗；
@@ -481,7 +557,7 @@ grep -aE 'PATTERN' "$L" | sed 's/.*FlymeFreeform //' | tail -30
 
 **下一步**
 
-1. 1.5.1 待用户决定：装机并重启 system_server（判定代码在 system_server）后验收卡片开关与等结果全屏
+1. 已装机的 1.5.3 / 2026111007 待真机验收：操作/凭据保护、结果回传、普通链接与通知、未知通知目标全屏回退、扇形快照排除、迷你小窗恢复。源码 2026111008 的设置页持久化删除尚未构建或装机，待用户后续指示
 1. 按上面「待验证」清单在设备上验收（钩子已生效，用户自行重启过）；2026110916 装机后：进二级 / 三级页回桌面，`am force-stop` 或等后台冻结清理后再打开，应回到原页面；在首页按返回退出后再开是首页
 2. 把 16.11.3、17.11.2 加进 `docs/sidebar-dex-resolution.md` 回归样本
 3. 卸载旧包 `io.github.hoerire.flymefreeform`
