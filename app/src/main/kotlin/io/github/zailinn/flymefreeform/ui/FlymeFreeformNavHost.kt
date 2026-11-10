@@ -3,16 +3,12 @@ package io.github.zailinn.flymefreeform.ui
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import io.github.zailinn.flymefreeform.apps.SelectableEntry
 import io.github.zailinn.flymefreeform.config.OutsideTapCloseMode
 import io.github.zailinn.flymefreeform.config.PinnedTarget
 import io.github.zailinn.flymefreeform.framework.FrameworkConnectionState
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.serialization.Serializable
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavKey
@@ -81,15 +77,8 @@ internal fun FlymeFreeformNavHost(
     onMoveTargetToArc: (PinnedTarget, Int) -> Unit,
     onBlacklistChange: (String, Boolean) -> Unit,
 ) {
-    val context = LocalContext.current.applicationContext
-    // 有保存状态时 rememberSaveable 恢复它；没有（进程连同任务状态被清掉）时从本地记录恢复上次的页面。
-    val initialRoutes = remember { NavStackStore.load(context) }
-    val backStack = rememberNavBackStack(*initialRoutes.toTypedArray())
-    LaunchedEffect(backStack) {
-        snapshotFlow { backStack.filterIsInstance<AppRoute>() }
-            .distinctUntilChanged()
-            .collect { routes -> NavStackStore.save(context, routes) }
-    }
+    // 页面栈只随 Activity 的保存状态恢复：应用留在后台再点开停在上次页面，从最近任务划掉后回首页。
+    val backStack = rememberNavBackStack<AppRoute>(AppRoute.Settings)
     val popBackStack = remember(backStack) {
         {
             if (backStack.size > 1) {
