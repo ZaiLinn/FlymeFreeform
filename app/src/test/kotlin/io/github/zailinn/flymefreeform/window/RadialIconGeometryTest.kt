@@ -13,6 +13,15 @@ class RadialIconGeometryTest {
         RadialIconGeometry.fit(width, height, density, insets, count)
 
     @Test
+    fun everyArcCountKeepsRadiusAndLiftsTheCenter() {
+        for (arcCount in 1..4) {
+            val metrics = RadialIconGeometry.fit(400f, 890f, 1f, OverlaySafeInsets(), 7, arcCount = arcCount)
+            assertEquals(242f, metrics.radius, 0.001f)
+            assertEquals(15f, metrics.bottomLift, 0.001f)
+        }
+    }
+
+    @Test
     fun baselineMatchesFixedDimensionsForEveryItemCount() {
         for (count in 1..7) {
             val metrics = fit(count = count)

@@ -35,6 +35,10 @@ internal data class RadialVisualMetrics(
     val pixelsPerBaseDp: Float,
     /** 相邻两条圆弧的半径差；单圆弧时为 0。 */
     val arcSpacing: Float = 0f,
+    /** 第 2 条起各内侧圆弧的半径（像素，由外向内，见 RadialArcPlan.innerArcRadiiDp）；单圆弧时为空。 */
+    val innerArcRadii: List<Float> = emptyList(),
+    /** 圆心相对安全区底边上移的像素数（见 RadialGeometry.BOTTOM_LIFT_BASE_DP）。 */
+    val bottomLift: Float = 0f,
 )
 
 internal data class PanelVisualMetrics(

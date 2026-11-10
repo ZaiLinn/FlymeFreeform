@@ -119,6 +119,41 @@ class RadialArcPlanTest {
     }
 
     @Test
+    fun fourArcsBalanceVisibleGapsWithoutMovingOuterArc() {
+        for (arcCount in 1..3) {
+            val spacing = RadialArcPlan.arcSpacingDp(arcCount, 242f, 44f)
+            assertEquals(List(arcCount - 1) { 242f - spacing * (it + 1) }, RadialArcPlan.innerArcRadiiDp(arcCount, 242f, 44f))
+        }
+        val radii = RadialArcPlan.innerArcRadiiDp(4, 242f, 44f)
+        assertEquals(3, radii.size)
+        val all = listOf(242f) + radii
+        val diameters = List(4) { 44f * RadialIconScale.arcScale(it, 4) }
+        val gaps = List(3) { (all[it] - all[it + 1]) - (diameters[it] + diameters[it + 1]) / 2f }
+        gaps.forEach { assertEquals(7.73f, it, 0.02f) }
+        val counts = RadialArcPlan.distribute(18, 6, 4)
+        val layout =
+            RadialGeometry.layout(
+                side = CornerSide.Right,
+                width = 400f,
+                height = 890f,
+                radius = 242f,
+                itemCount = counts.first() + 1,
+                innerArcCounts = counts.drop(1),
+                arcSpacing = RadialArcPlan.arcSpacingDp(4, 242f, 44f),
+                iconDiameter = diameters.last(),
+                innerArcRadii = radii,
+            )
+        assertEquals(50f, layout.minSelectDistance, 0.01f)
+        // 各圈图标仍落在给定半径上，最内圈 3 个图标互不重叠。
+        val origin = layout.origin
+        fun distance(point: GesturePoint) = kotlin.math.hypot(point.x - origin.x, point.y - origin.y)
+        layout.itemCenters.drop(6).take(5).forEach { assertEquals(radii[0], distance(it), 0.01f) }
+        layout.itemCenters.drop(15).take(3).forEach { assertEquals(radii[2], distance(it), 0.01f) }
+        val chord = 2f * radii[2] * sin(28f / 2f * PI.toFloat() / 180f)
+        assertTrue(chord >= diameters.last())
+    }
+
+    @Test
     fun innermostArcKeepsOneSpacingOfReachTowardCorner() {
         for (arcCount in 2..4) {
             val spacing = RadialArcPlan.arcSpacingDp(arcCount, 242f, 44f)

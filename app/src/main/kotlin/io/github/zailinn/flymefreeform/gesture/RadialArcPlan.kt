@@ -123,6 +123,41 @@ internal object RadialArcPlan {
         return minOf(preferred, fitted).coerceAtLeast(iconDiameterDp)
     }
 
+    /**
+     * 第 2 条起各内侧圆弧的半径（基准 dp），由外向内。
+     *
+     * 三条以内各圈相距 [arcSpacingDp]。四条时圈距压到 47.4，而内圈图标逐圈缩小（[RadialIconScale.arcScale]），
+     * 等距排开会外紧内松（相邻两圈图标边缘相距 4.5 / 7.0 / 9.3）；这里按相邻两圈图标的平均直径加同一段空隙分配圈距，
+     * 并把最内圈往角落收到角落空白区（最内圈半径减最后一个圈距，见 RadialGeometry.layout）恰为 [MIN_DEAD_ZONE_DP]。
+     * 结果圈距约 50.6 / 48.5 / 46.4，空隙约 7.7 / 8.1 / 8.3，外圈半径与图标大小不变。
+     * 算出的空隙不合理或最内圈放不下时退回等距。
+     */
+    fun innerArcRadiiDp(arcCount: Int, outerRadiusDp: Float, iconDiameterDp: Float): List<Float> {
+        val count = coerceArcCount(arcCount)
+        if (count <= 1) return emptyList()
+        val spacing = arcSpacingDp(count, outerRadiusDp, iconDiameterDp)
+        val uniform = List(count - 1) { index -> outerRadiusDp - spacing * (index + 1) }
+        if (count < MAX_ARC_COUNT) return uniform
+        val diameters = List(count) { arc -> iconDiameterDp * RadialIconScale.arcScale(arc, count) }
+        val averages = List(count - 1) { arc -> (diameters[arc] + diameters[arc + 1]) / 2f }
+        // 空白区 = R − Σaverages − (count−1)·gap − (averages.last + gap) = MIN_DEAD_ZONE_DP。
+        val gap = (outerRadiusDp - averages.sum() - averages.last() - MIN_DEAD_ZONE_DP) / count
+        if (gap <= 0f) return uniform
+        val radii = mutableListOf<Float>()
+        var current = outerRadiusDp
+        for (average in averages) {
+            current -= average + gap
+            radii += current
+        }
+        val innermost = radii.last()
+        val innermostCapacity = innerCapacities(count).lastOrNull() ?: return uniform
+        val chord = 2f * innermost * kotlin.math.sin(Math.toRadians(84.0 / innermostCapacity / 2.0)).toFloat()
+        return if (chord >= diameters.last()) radii else uniform
+    }
+
+    /** 四条圆弧时角落空白区的下限（基准 dp）：手势刚识别时手指离角落约 15dp，留到 50 才不会一松手就误选最内一圈。 */
+    private const val MIN_DEAD_ZONE_DP = 50f
+
     private const val PREFERRED_SPACING_FACTOR = 1.3f
     private const val INNERMOST_RADIUS_FACTOR = 2.27f
 }

@@ -433,11 +433,14 @@ internal fun HitRangePreview(
                 RadialGeometry.layout(
                     side = side,
                     width = size.width,
-                    height = size.height,
+                    height = size.height - RadialGeometry.BOTTOM_LIFT_BASE_DP * basePixel,
                     radius = arcRadius,
                     itemCount = arcItemCounts.first() + 1,
                     innerArcCounts = arcItemCounts.drop(1),
                     arcSpacing = arcSpacing,
+                    innerArcRadii =
+                        RadialArcPlan.innerArcRadiiDp(arcCount, RadialBaseArcRadiusDp, RadialBaseIconDiameterDp)
+                            .map { it * basePixel },
                     iconDiameter = iconRadius * 2f * RadialIconScale.arcScale(arcItemCounts.indexOfLast { it > 0 }, arcCount),
                 )
             val arcOfIndex = RadialArcPlan.arcOfIndex(arcItemCounts)

@@ -69,6 +69,9 @@ internal object RadialIconGeometry {
             itemPadding = BASE_ITEM_PADDING_DP * unit,
             pixelsPerBaseDp = unit,
             arcSpacing = arcSpacing,
+            innerArcRadii =
+                RadialArcPlan.innerArcRadiiDp(arcCount, BASE_RADIUS_DP, BASE_ICON_DIAMETER_DP).map { it * unit },
+            bottomLift = io.github.zailinn.flymefreeform.gesture.RadialGeometry.BOTTOM_LIFT_BASE_DP * unit,
         )
     }
 }
