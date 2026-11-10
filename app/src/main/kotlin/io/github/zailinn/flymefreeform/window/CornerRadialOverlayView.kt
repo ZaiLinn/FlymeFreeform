@@ -169,6 +169,12 @@ internal class CornerRadialOverlayView(
     private var radialHitRangeDp = ModulePreferences.DEFAULT_RADIAL_HIT_RANGE_DP
     /** 「永久保持」：松手未选中时保留浮层，并允许直接点选条目。 */
     private var keepOpen = false
+    /** 保持挂起：松手时没选中，扇形停在屏幕上等待点选。 */
+    private var restingOpen = false
+
+    /** 扇形正停在屏幕上等待点选（保持挂起、手指已抬起、未提交、未打开面板）。宿主据此在回桌面或切应用时收起。 */
+    val isRestingOpen: Boolean
+        get() = restingOpen && keepOpen && !dismissing && !disposed && !panelModeState.value
     /** 屏幕中央所选应用卡片与其应用名的开关，随每次呼出从最新设置传入。 */
     private var centerPreview = false
     private var centerLabel = true
@@ -354,6 +360,7 @@ internal class CornerRadialOverlayView(
         check(!isAttachedToWindow) { "Overlay must be initialized before it is attached" }
         this.moreColor = ModulePreferences.coerceRadialMoreColor(moreColor)
         this.keepOpen = keepOpen
+        restingOpen = false
         this.centerPreview = centerPreview
         this.centerLabel = centerLabel
         this.centerSizeDp = ModulePreferences.coerceRadialCenterSizeDp(centerSizeDp)
@@ -417,7 +424,10 @@ internal class CornerRadialOverlayView(
         )
         when {
             // 永久保持：未选中任何条目时不收起，等待下一次点选。
-            selection == null && keepOpen -> removeCallbacks(timeout)
+            selection == null && keepOpen -> {
+                removeCallbacks(timeout)
+                restingOpen = true
+            }
             selection == null -> dismissAnimated()
             selection < catalog.radialApps.size -> dismissAnimated(catalog.radialApps[selection])
             else -> showMorePanel()
@@ -1136,6 +1146,7 @@ internal class CornerRadialOverlayView(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        viewTreeObserver.addOnPreDrawListener(snapshotExclusion)
         if (!disposed && !lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         }
@@ -1147,6 +1158,8 @@ internal class CornerRadialOverlayView(
     }
 
     override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnPreDrawListener(snapshotExclusion)
+        snapshotSurface = null
         val cleanupFailure = disposeOverlay()
         super.onDetachedFromWindow()
         cleanupFailure?.let(listener::onCleanupFailed)
@@ -1184,8 +1197,13 @@ internal class CornerRadialOverlayView(
     }
 
     private fun handleBack(event: KeyEvent): Boolean {
-        if (!panelModeState.value || event.keyCode != KeyEvent.KEYCODE_BACK) return false
-        if (event.action == KeyEvent.ACTION_UP) requestDismiss()
+        if (event.keyCode != KeyEvent.KEYCODE_BACK) return false
+        // 保持挂起时浮层持有焦点，返回键到不了下层应用：按返回收起扇形。
+        val resting = isRestingOpen
+        if (!panelModeState.value && !resting) return false
+        if (event.action == KeyEvent.ACTION_UP) {
+            if (resting) dismissAnimated() else requestDismiss()
+        }
         return true
     }
 
@@ -1242,13 +1260,15 @@ internal class CornerRadialOverlayView(
             RadialGeometry.layout(
                 side = side,
                 width = safeWidth,
-                height = safeHeight,
+                // 圆心上移：最下面一排图标离底边更远。
+                height = safeHeight - metrics.radial.bottomLift,
                 offsetX = radialInsets.left,
                 offsetY = radialInsets.top,
                 radius = metrics.radial.radius,
                 itemCount = outerSlotCount,
                 innerArcCounts = arcItemCounts.drop(1),
                 arcSpacing = metrics.radial.arcSpacing,
+                innerArcRadii = metrics.radial.innerArcRadii,
                 // 角落空白区按最内一圈缩小后的图标计。
                 iconDiameter =
                     metrics.radial.iconDiameter *
@@ -1375,6 +1395,33 @@ internal class CornerRadialOverlayView(
         invalidate()
     }
 
+    // 浮层存活期间窗口不会隐藏，Surface 不重建：标记成功一次即可，之后每帧只剩一次判空。
+    private var snapshotSurface: android.view.SurfaceControl? = null
+    private var snapshotExclusionFailed = false
+    private val snapshotExclusion = android.view.ViewTreeObserver.OnPreDrawListener {
+        if (!disposed && !snapshotExclusionFailed && snapshotSurface == null) {
+            runCatching {
+                val root = android.view.View::class.java.getDeclaredMethod("getViewRootImpl").apply {
+                    isAccessible = true
+                }.invoke(this)
+                val surface = root?.javaClass?.getMethod("getSurfaceControl")?.invoke(root)
+                    as? android.view.SurfaceControl
+                if (surface != null && surface.isValid) {
+                    android.view.SurfaceControl.Transaction().use { transaction ->
+                        transaction.javaClass.getMethod("setSkipScreenshot", android.view.SurfaceControl::class.java,
+                            Boolean::class.javaPrimitiveType).invoke(transaction, surface, true)
+                        transaction.apply()
+                    }
+                    snapshotSurface = surface
+                }
+            }.onFailure {
+                snapshotExclusionFailed = true
+                debug("SYSTEM_OVERLAY_SNAPSHOT_EXCLUSION_FAILED_" + it.javaClass.simpleName)
+            }
+        }
+        true
+    }
+
     private fun dismissAnimated(pendingCommit: RadialEntry?) {
         if (dismissing || disposed) return
         dismissing = true
@@ -1405,7 +1452,6 @@ internal class CornerRadialOverlayView(
         if (dismissNotified || disposed) return
         removeCallbacks(dismissFallback)
         val pendingCommit = exitRequestState.value?.pendingCommit
-        exitRequestState.value = null
         if (pendingCommit == null || commitNotified) {
             commitNotified = false
             requestDismiss()

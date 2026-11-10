@@ -72,6 +72,7 @@ internal class ColorOsFreeformCoordinator(
     private val gestureEngine = CornerGestureEngine()
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val launcher = ColorOsFreeformLauncher(context)
+    private val miniWindowRestorer = ColorOsMiniWindowRestorer(controller)
     private val sidebar = ColorOsSidebarClient(context, handler, logger)
     private val appCatalog =
         ColorOsAppCatalog(context, catalogExecutor, logger) { snapshot ->
@@ -244,6 +245,7 @@ internal class ColorOsFreeformCoordinator(
     private fun onForegroundChanged(packageName: String?) {
         gesturePermissions.foregroundChanged()
         appCatalog.updateForeground(packageName)
+        closeRestingKeepOpen("FOREGROUND")
         if (!pointerRegistered || !lastSettings.enabled) return
         if (appCatalog.radialDependsOnForeground) {
             panelOrderStale = false
@@ -251,6 +253,21 @@ internal class ColorOsFreeformCoordinator(
         } else {
             panelOrderStale = true
         }
+    }
+
+    /**
+     * 保持挂起的扇形停在屏幕上时，回桌面、最近任务或切换应用就立即移除。
+     * 只处理松手后停着的扇形（[CornerRadialOverlayView.isRestingOpen]）：手指还按着的手势、已提交正在淡出的扇形、
+     * 打开的面板都不动，避免打断选择或截断启动。浮层挂在旧应用 Surface 下，跟着转场走不好看，所以不播退场。
+     */
+    private fun closeRestingKeepOpen(reason: String) {
+        val view = overlay ?: return
+        if (morePanelActive || !view.isRestingOpen) return
+        debug("SYSTEM_OVERLAY_KEEP_OPEN_CLOSED_" + reason)
+        activeEnvironmentApproved = false
+        activeGestureConfig = null
+        gestureEngine.cancel()
+        removeOverlay()
     }
 
     private fun registerPackageObserver() {
@@ -280,7 +297,10 @@ internal class ColorOsFreeformCoordinator(
         }
     }
 
-    /** 回桌面（homekey）或手势上滑（recentapps）时收起内置「更多」面板；侧边栏面板由其窗口自行处理。 */
+    /**
+     * 回桌面（homekey）或手势上滑（recentapps）时收起内置「更多」面板；侧边栏面板由其窗口自行处理。
+     * 保持挂起、正停在屏幕上的扇形同样收起，见 [closeRestingKeepOpen]。
+     */
     private val systemDialogsReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -288,7 +308,10 @@ internal class ColorOsFreeformCoordinator(
                 val reason = intent.getStringExtra("reason")
                 if (reason != "homekey" && reason != "recentapps") return
                 handler.post {
-                    if (!morePanelActive) return@post
+                    if (!morePanelActive) {
+                        closeRestingKeepOpen(reason.uppercase())
+                        return@post
+                    }
                     debug("SYSTEM_MORE_PANEL_CLOSE_" + reason)
                     overlay?.dismissPanel()
                 }
@@ -695,6 +718,7 @@ internal class ColorOsFreeformCoordinator(
         // 应用/快捷方式在松手当帧就下发启动，浮层自行淡出（与系统侧边栏一致的手感）；
         // 取屏类工具不能与浮层共存：先 removeViewImmediate，再等两帧合成完成才允许执行，
         // 否则截图/录屏会把扇形一起拍进画面（见 launchCommittedEntry 的两帧等待）。
+        // 浮层已用 setSkipScreenshot 排除出任务快照，淡出期间启动目标不会把扇形拍进快照。
         if ((entry.target as? PinnedTarget.Sidebar)?.kind == PinnedTarget.Kind.Tool) removeOverlay()
         handler.post {
             if (generation == pointerGeneration) launchCommittedEntry(entry)
@@ -731,6 +755,11 @@ internal class ColorOsFreeformCoordinator(
         }
         target as PinnedTarget.App
         debug("SYSTEM_LAUNCH_APP_" + target.packageName + "_LEFT_" + overlayAtLeft)
+        // 目标已是迷你小窗：走系统原生的退出迷你态（带放大动画），不再按启动参数重设位置。
+        if (miniWindowRestorer.restore(target.packageName, currentUserId)) {
+            debug("SYSTEM_LAUNCH_MINI_RESTORED_" + target.packageName)
+            return
+        }
         when (val result = launcher.launch(
             android.content.ComponentName(target.packageName, target.className),
             atLeft = overlayAtLeft,
@@ -870,6 +899,7 @@ internal class ColorOsFreeformCoordinator(
         overlay = null
         if (sidebar.isPending) sidebar.cancel()
         morePanelActive = false
+        view.visibility = android.view.View.INVISIBLE
         val cleanupFailure = view.disposeOverlay()
         try {
             windowManager.removeViewImmediate(view)
